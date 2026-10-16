@@ -127,48 +127,144 @@ func perform(_ request: [String:Any]) async throws -> [String:Any] {
     return ["message":"Approved \(kind) input delivered to \(app). Verify the next screen for the outcome."]
 }
 
+func authorize(_ envelope: [String:String]) throws -> [String:Any] {
+    guard let dataDirectory=Bundle.main.object(forInfoDictionaryKey:"NovaCoreDataDirectory") as? String else { try deny("Unsigned configuration") }
+    // Trusted configuration is part of the signed bundle. The caller/model
+    // cannot select a different key and mint its own authorization.
+    let keyURL=URL(fileURLWithPath:dataDirectory).appendingPathComponent("operator.key")
+    let attributes=try FileManager.default.attributesOfItem(atPath:keyURL.path)
+    guard (attributes[.posixPermissions] as? Int ?? 0) & 0o077 == 0 else {try deny("Unsafe key permissions")}
+    let key=SymmetricKey(data:try Data(contentsOf:keyURL))
+    guard let payload=Data(base64Encoded:envelope["payload"] ?? ""),let mac=Data(base64Encoded:envelope["mac"] ?? ""),
+          HMAC<SHA256>.isValidAuthenticationCode(mac,authenticating:payload,using:key),
+          let request=try JSONSerialization.jsonObject(with:payload) as? [String:Any],
+          let expires=request["expires"] as? Double, expires > Date().timeIntervalSince1970, expires <= Date().timeIntervalSince1970+10,
+          let nonce=request["nonce"] as? String, nonce.range(of:"^[a-f0-9]{32}$",options:.regularExpression) != nil else {try deny("Invalid or expired action authorization")}
+    let directory=keyURL.deletingLastPathComponent().appendingPathComponent("operator-nonces")
+    try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+    let fd=open(directory.appendingPathComponent(nonce).path,O_WRONLY|O_CREAT|O_EXCL,0o600)
+    guard fd >= 0 else {try deny("Action token already used")}; close(fd)
+    return request
+}
+
+func permissionState() -> [String:Any] { ["accessibility":AXIsProcessTrusted(),"screenRecording":CGPreflightScreenCaptureAccess()] }
+func requestPermissions() {
+    if !AXIsProcessTrusted() { _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String:true] as CFDictionary) }
+    if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+}
+func encode(_ value:[String:Any]) -> Data { (try? JSONSerialization.data(withJSONObject:value,options:.sortedKeys)) ?? Data("{\"error\":\"Encoding failed\"}".utf8) }
+
+@MainActor
+func respond(_ raw: Data) async -> [String:Any] {
+    do {
+        guard raw.count < 20000, let message=try JSONSerialization.jsonObject(with:raw) as? [String:Any],
+              let command=message["command"] as? String else { try deny("Unsupported request") }
+        if command == "permissions" { return permissionState() }
+        guard command == "execute", let envelope=message["envelope"] as? [String:String] else { try deny("Unsupported request") }
+        return try await perform(try authorize(envelope))
+    } catch OperatorError.denied(let reason) { return ["error":reason] }
+    catch { return ["error":"macOS operation failed. Check permissions and capture a fresh screen."] }
+}
+
+// Core talks to this long-running app over a Unix socket in a 0700 directory, so
+// macOS attributes Accessibility and Screen Recording to Nova Operator itself.
+// sun_path is limited to 104 bytes, which rules out the project's .nova-data path.
+let socketURL=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0]
+    .appendingPathComponent("Nova Operator",isDirectory:true).appendingPathComponent("operator.sock")
+
+func withAddress<T>(_ path: String, _ body: (UnsafePointer<sockaddr>, socklen_t) -> T) -> T {
+    var address=sockaddr_un(); address.sun_family=sa_family_t(AF_UNIX)
+    withUnsafeMutableBytes(of:&address.sun_path) { buffer in for (i,byte) in path.utf8.prefix(buffer.count-1).enumerated() { buffer[i]=byte } }
+    return withUnsafePointer(to:&address) { $0.withMemoryRebound(to:sockaddr.self,capacity:1) { body($0,socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+}
+
+func startServer() throws {
+    let path=socketURL.path
+    try FileManager.default.createDirectory(at:socketURL.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+    chmod(socketURL.deletingLastPathComponent().path,0o700)
+    let probe=socket(AF_UNIX,SOCK_STREAM,0)
+    let running=withAddress(path) { connect(probe,$0,$1) } == 0
+    close(probe)
+    if running { try deny("Nova Operator is already running") }
+    unlink(path)
+    let server=socket(AF_UNIX,SOCK_STREAM,0)
+    guard server >= 0, withAddress(path,{ bind(server,$0,$1) }) == 0, listen(server,8) == 0 else { try deny("Could not open the Nova Operator socket") }
+    chmod(path,0o600)
+    Thread.detachNewThread {
+        while true {
+            let client=accept(server,nil,nil)
+            guard client >= 0 else { continue }
+            var uid=uid_t(0), gid=gid_t(0)
+            if getpeereid(client,&uid,&gid) == 0, uid == getuid() { serve(client) }
+            close(client)
+        }
+    }
+}
+
+func serve(_ client: Int32) {
+    var timeout=timeval(tv_sec:5,tv_usec:0)
+    setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,socklen_t(MemoryLayout<timeval>.size))
+    var raw=Data(), buffer=[UInt8](repeating:0,count:4096)
+    while raw.count < 20000 {
+        let count=read(client,&buffer,buffer.count)
+        if count <= 0 { break }
+        raw.append(contentsOf:buffer[0..<count])
+    }
+    let done=DispatchSemaphore(value:0)
+    var reply=Data()
+    Task { @MainActor in reply=encode(await respond(raw)); done.signal() }
+    done.wait()
+    reply.withUnsafeBytes { bytes in
+        var offset=0
+        while offset < bytes.count {
+            let written=write(client,bytes.baseAddress!+offset,bytes.count-offset)
+            if written <= 0 { break }
+            offset+=written
+        }
+    }
+}
+
+@MainActor
+final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    var item: NSStatusItem!
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        do { try startServer() }
+        catch { print("Nova Operator: \(error)"); exit(0) }
+        item=NSStatusBar.system.statusItem(withLength:NSStatusItem.squareLength)
+        item.button?.image=NSImage(systemSymbolName:"cursorarrow.rays",accessibilityDescription:"Nova Operator")
+        let menu=NSMenu(); menu.delegate=self; item.menu=menu
+        // Asking on launch adds Nova Operator to both System Settings lists.
+        requestPermissions()
+    }
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let state=permissionState()
+        for (name,key) in [("Accessibility","accessibility"),("Screen Recording","screenRecording")] {
+            let line=NSMenuItem(title:"\(name): \(state[key] as? Bool == true ? "Allowed" : "Not allowed")",action:nil,keyEquivalent:"")
+            line.isEnabled=false; menu.addItem(line)
+        }
+        menu.addItem(.separator())
+        let ask=NSMenuItem(title:"Request Permissions…",action:#selector(request),keyEquivalent:"")
+        ask.target=self; menu.addItem(ask)
+        menu.addItem(NSMenuItem(title:"Quit Nova Operator",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q"))
+    }
+    @objc func request() { requestPermissions() }
+}
+
 @main
 struct NovaOperator {
-    @MainActor static func main() async {
-        _ = NSApplication.shared
-        do {
-            let command=CommandLine.arguments.dropFirst().first ?? "permissions"
-            if command == "permissions" || command == "setup" {
-                if command == "setup" {
-                    _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String:true] as CFDictionary)
-                    _ = CGRequestScreenCaptureAccess()
-                }
-                emit(["accessibility":AXIsProcessTrusted(),"screenRecording":CGPreflightScreenCaptureAccess()]); return
+    @MainActor static func main() {
+        if CommandLine.arguments.dropFirst().first == "self-test" {
+            for invalid:[String:Any] in [["kind":"shell","app":"TextEdit"],["kind":"click","app":"TextEdit","x":-1,"y":500],["kind":"type","app":"TextEdit","text":"a\nb"],["kind":"key","app":"TextEdit","key":"cmd+space"],["kind":"observe","app":"Terminal"]] {
+                var rejected=false; do {try validate(invalid)} catch {rejected=true}
+                guard rejected else { FileHandle.standardOutput.write(encode(["error":"Native validation test failed"])); exit(1) }
             }
-            if command == "self-test" {
-                for invalid:[String:Any] in [["kind":"shell","app":"TextEdit"],["kind":"click","app":"TextEdit","x":-1,"y":500],["kind":"type","app":"TextEdit","text":"a\nb"],["kind":"key","app":"TextEdit","key":"cmd+space"],["kind":"observe","app":"Terminal"]] {
-                    var rejected=false; do {try validate(invalid)} catch {rejected=true}
-                    guard rejected else {try deny("Native validation test failed")}
-                }
-                emit(["negativeValidationTests":5,"passed":true]); return
-            }
-            guard command == "execute", CommandLine.arguments.count == 2,
-                  let dataDirectory=Bundle.main.object(forInfoDictionaryKey:"NovaCoreDataDirectory") as? String else { try deny("Unsupported invocation or unsigned configuration") }
-            // Trusted configuration is part of the signed bundle. The caller/model
-            // cannot select a different key and mint its own authorization.
-            let keyURL=URL(fileURLWithPath:dataDirectory).appendingPathComponent("operator.key")
-            let attributes=try FileManager.default.attributesOfItem(atPath:keyURL.path)
-            guard (attributes[.posixPermissions] as? Int ?? 0) & 0o077 == 0 else {try deny("Unsafe key permissions")}
-            let key=SymmetricKey(data:try Data(contentsOf:keyURL))
-            let raw=FileHandle.standardInput.readDataToEndOfFile()
-            guard raw.count < 20000, let envelope=try JSONSerialization.jsonObject(with:raw) as? [String:String],
-                  let payload=Data(base64Encoded:envelope["payload"] ?? ""),let mac=Data(base64Encoded:envelope["mac"] ?? ""),
-                  HMAC<SHA256>.isValidAuthenticationCode(mac,authenticating:payload,using:key),
-                  let request=try JSONSerialization.jsonObject(with:payload) as? [String:Any],
-                  let expires=request["expires"] as? Double, expires > Date().timeIntervalSince1970, expires <= Date().timeIntervalSince1970+10,
-                  let nonce=request["nonce"] as? String, nonce.range(of:"^[a-f0-9]{32}$",options:.regularExpression) != nil else {try deny("Invalid or expired action authorization")}
-            let directory=keyURL.deletingLastPathComponent().appendingPathComponent("operator-nonces")
-            try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
-            let fd=open(directory.appendingPathComponent(nonce).path,O_WRONLY|O_CREAT|O_EXCL,0o600)
-            guard fd >= 0 else {try deny("Action token already used")}; close(fd)
-            emit(try await perform(request))
-        } catch OperatorError.denied(let reason) {emit(["error":reason]);exit(1)}
-        catch {emit(["error":"macOS operation failed. Check permissions and capture a fresh screen."]);exit(1)}
+            FileHandle.standardOutput.write(encode(["negativeValidationTests":5,"passed":true])); exit(0)
+        }
+        let app=NSApplication.shared
+        let delegate=StatusMenu()
+        app.delegate=delegate
+        app.setActivationPolicy(.accessory)
+        app.run()
     }
-    static func emit(_ value:[String:Any]) { if let data=try? JSONSerialization.data(withJSONObject:value,options:.sortedKeys) {FileHandle.standardOutput.write(data)} }
 }

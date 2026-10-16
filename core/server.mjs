@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Store } from './db.mjs';
 import { createAI } from './ai.mjs';
-import { createComputer } from './computer.mjs';
+import { createComputer, permissions } from './computer.mjs';
 
 const execFileAsync = promisify(execFile);
 const defaultDb = resolve(process.env.NOVA_DB ?? './.nova-data/nova.sqlite');
@@ -178,6 +178,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const app = makeNova();
   const port = await app.listen(Number(process.env.NOVA_PORT ?? 8787));
   console.log(`Nova Core v0.1 listening on http://127.0.0.1:${port} (chat and reviewed app-scoped computer control)`);
+  console.log('Nova Operator service-context permissions: '+JSON.stringify(await permissions()));
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal,()=>{void app.close().then(()=>process.exit(0));});
   }

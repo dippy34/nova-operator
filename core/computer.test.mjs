@@ -21,6 +21,15 @@ function fixture(options={}){
  return {store,owner,other,control,calls,setTime:value=>now=value,close(){store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 const signal=()=>new AbortController().signal;
+test('missing permission is named precisely and no app is activated when Core preflight fails',async()=>{
+ for(const [permission,expected,other] of [[{accessibility:true,screenRecording:false},'needs Screen Recording','needs Accessibility'],[{accessibility:false,screenRecording:true},'needs Accessibility','needs Screen Recording']]){
+  const f=fixture({permissionCheck:async()=>({installed:true,...permission})});
+  try{
+   await assert.rejects(f.control.start(f.owner.id,'Calculator',signal()),error=>error.message.includes(expected)&&!error.message.includes(other));
+   assert.equal(f.calls.length,0);
+  }finally{f.close();}
+ }
+});
 test('model outputs cannot select another app, shell, arbitrary keys, or out-of-window input',()=>{
  for(const input of [{kind:'exec',command:'whoami'},{kind:'click',x:1,y:500},{kind:'click',x:500,y:500,app:'Terminal'},{kind:'key',key:'cmd+space'},{kind:'type',text:'line\nreturn'},{kind:'type',text:'a'.repeat(501)},null])assert.throws(()=>validateAction(input));
  assert.deepEqual(validateAction({kind:'type',text:'Hello Nova'}),{kind:'type',text:'Hello Nova'});

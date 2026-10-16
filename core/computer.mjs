@@ -1,6 +1,7 @@
-import {execFile} from 'node:child_process';
+import {connect} from 'node:net';
 import {existsSync,writeFileSync,readFileSync,chmodSync} from 'node:fs';
 import {randomBytes,createHmac} from 'node:crypto';
+import {homedir} from 'node:os';
 import {resolve,dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -9,6 +10,8 @@ export const KEYS=['return','tab','escape','backspace','up','down','left','right
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 export const binary=join(root,'.nova-data','Nova Operator.app','Contents','MacOS','NovaOperator');
 const keyFile=join(root,'.nova-data','operator.key');
+export const socketPath=join(homedir(),'Library','Application Support','Nova Operator','operator.sock');
+const NOT_RUNNING='Nova Operator is not running on the Mac. Run npm run operator:install, or open Nova Operator.app.';
 const fail=text=>{throw new Error(text);};
 
 export function validateAction(input) {
@@ -26,27 +29,31 @@ export function signedEnvelope(request, key, now=Date.now()) {
   const payload=Buffer.from(JSON.stringify({...request,nonce:randomBytes(16).toString('hex'),expires:now/1000+5}));
   return {payload:payload.toString('base64'),mac:createHmac('sha256',key).update(payload).digest('base64')};
 }
-export function native(request,signal) {
-  if(!existsSync(binary))return Promise.reject(new Error('Build the Nova Operator Mac helper first.'));
-  if(!existsSync(keyFile))writeFileSync(keyFile,randomBytes(32),{mode:0o600,flag:'wx'});
-  chmodSync(keyFile,0o600);
-  const envelope=signedEnvelope(request,readFileSync(keyFile));
+export function operatorRequest(message,{signal,timeout=15000}={}) {
   return new Promise((ok,reject)=>{
-    const process=execFile(binary,['execute'],{signal,timeout:15000,maxBuffer:8*1024*1024,env:{}},(error,stdout)=>{
-      let result;try{result=JSON.parse(stdout);}catch{return reject(new Error('Nova Operator did not return a result. Check macOS permissions.'));}
-      if(error||result.error)reject(new Error(result.error??'Computer action failed'));
-      else ok(result);
-    });
-    process.stdin.end(JSON.stringify(envelope));
+    const chunks=[];let size=0;
+    const socket=connect(socketPath);
+    const timer=setTimeout(()=>socket.destroy(new Error('Nova Operator did not respond in time.')),timeout);
+    const abort=()=>socket.destroy(new Error('Session cancelled'));
+    signal?.addEventListener('abort',abort,{once:true});
+    const finish=()=>{clearTimeout(timer);signal?.removeEventListener('abort',abort);};
+    socket.on('connect',()=>socket.end(JSON.stringify(message)));
+    socket.on('data',chunk=>{size+=chunk.length;if(size>8*1024*1024)socket.destroy(new Error('Nova Operator reply too large'));else chunks.push(chunk);});
+    socket.on('error',error=>{finish();reject(['ENOENT','ECONNREFUSED'].includes(error.code)?new Error(NOT_RUNNING):error);});
+    socket.on('end',()=>{finish();try{ok(JSON.parse(Buffer.concat(chunks)));}catch{reject(new Error('Nova Operator did not return a result. Check macOS permissions.'));}});
   });
 }
-export function permissions() {
-  return new Promise(ok=>{
-    if(!existsSync(binary))return ok({installed:false,accessibility:false,screenRecording:false});
-    execFile(binary,['permissions'],{timeout:5000,env:{}},(error,stdout)=>{
-      try{ok({installed:true,...JSON.parse(stdout)});}catch{ok({installed:true,accessibility:false,screenRecording:false});}
-    });
-  });
+export async function native(request,signal) {
+  if(!existsSync(keyFile))writeFileSync(keyFile,randomBytes(32),{mode:0o600,flag:'wx'});
+  chmodSync(keyFile,0o600);
+  const result=await operatorRequest({command:'execute',envelope:signedEnvelope(request,readFileSync(keyFile))},{signal});
+  if(result.error)throw new Error(result.error);
+  return result;
+}
+export async function permissions() {
+  const installed=existsSync(binary);
+  try{return {installed,running:true,...await operatorRequest({command:'permissions'},{timeout:5000})};}
+  catch{return {installed,running:false,accessibility:false,screenRecording:false};}
 }
 
 export function createComputer(store,ai,{run=native,clock=Date.now,permissionCheck=permissions}={}) {
@@ -90,7 +97,10 @@ export function createComputer(store,ai,{run=native,clock=Date.now,permissionChe
       authorize(device);if(!APPS.includes(app))fail('App is outside supported scope');lock();
       try{
         const permission=await permissionCheck();
-        if(!permission.accessibility||!permission.screenRecording)fail('Grant Nova Operator Accessibility and Screen Recording access on the Mac first.');
+        if(!permission.installed&&permission.installed!==undefined)fail('Build the signed Nova Operator Mac helper first.');
+        if(permission.running===false)fail(NOT_RUNNING);
+        const missing=[!permission.accessibility&&'Accessibility',!permission.screenRecording&&'Screen Recording'].filter(Boolean);
+        if(missing.length)fail(`Nova Operator still needs ${missing.join(' and ')} access on the Mac. Open System Settings → Privacy & Security → ${missing[0]}, add Nova Operator and allow it. Permissions must pass from the running Core service, not only from a terminal.`);
         authorize(device);if(signal.aborted)fail('Session cancelled');
         await run({kind:'activate',app},signal);authorize(device);
         session={id:randomBytes(16).toString('hex'),device,app,expires:clock()+20*60000};pending.clear();tasks.clear();screens.clear();

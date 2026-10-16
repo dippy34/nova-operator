@@ -13,6 +13,9 @@
     "service:status": "node core/service.mjs status",
     "service:remove": "node core/service.mjs remove",
     "operator:build": "node macos/build.mjs",
+    "operator:install": "node macos/install.mjs install",
+    "operator:status": "node macos/install.mjs status",
+    "operator:remove": "node macos/install.mjs remove",
     "computer:owner": "node macos/owner.mjs",
     "test": "node --test core/*.test.mjs macos/*.test.mjs"
   }
