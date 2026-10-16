@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {Store} from './db.mjs';
 import {createComputer} from './computer.mjs';
-import {createWork,scheduleSpec,nextRun,MAX_PARALLEL} from './work.mjs';
+import {createWork,scheduleSpec,nextRun,MAX_PARALLEL,sendIMessage,IMESSAGE_HANDLE} from './work.mjs';
 
 const usage={input_tokens:100,output_tokens:20};
 const text=(t,stop='end_turn')=>({stop_reason:stop,usage,content:[{type:'text',text:t}]});
@@ -25,8 +25,9 @@ function fixture(answer){
   const run=async request=>{calls.push(request);return request.action==='screenshot'?{image:'anBn'}:{text:'OK'};};
   const computer=createComputer(store,{run,call,permissionCheck:async()=>({installed:true,running:true,accessibility:true,screenRecording:true})});
   const spawnImpl=(cmd,args)=>{const child={cmd,args,killed:false,on(){},kill(){child.killed=true;}};spawned.push(child);return child;};
-  const work=createWork(store,computer,{call,notify:(title,message)=>notes.push({title,message}),spawnImpl,tickMs:1e9,wakeMs:0});
-  return {store,owner,computer,work,bodies,calls,notes,spawned,async close(){await work.close();store.close();rmSync(dir,{recursive:true,force:true});}};
+  const texts=[],sms={ok:true};
+  const work=createWork(store,computer,{call,notify:(title,message)=>notes.push({title,message}),text:async(to,body)=>{texts.push({to,body});return sms.ok;},spawnImpl,tickMs:1e9,wakeMs:0});
+  return {store,owner,computer,work,bodies,calls,notes,spawned,texts,sms,async close(){await work.close();store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 const lastUser=body=>body.messages.at(-1).content.map(b=>b.text??'').join('');
 
@@ -42,6 +43,42 @@ test('schedule times are validated and repeat correctly in local time',()=>{
   assert.throws(()=>scheduleSpec({title:'Busy',task:'x',every_minutes:1,uses_computer:true},at),/every 5 minutes/);
   assert.throws(()=>scheduleSpec({title:'None',task:'x'},at),/Give a time/);
   assert.throws(()=>scheduleSpec({title:'Bad',task:'x',daily_at:'25:00'},at),/08:30/);
+});
+
+test('reports are texted by iMessage once a handle is set, and failures are recorded',async()=>{
+  const f=fixture(async body=>text(`Done: ${body.messages[0].content[0].text}`));
+  try{
+    const quiet=f.work.startAgent(f.owner.id,{title:'Quiet',task:'one'});
+    while(f.work.status(f.owner.id).running.length)await tick();
+    assert.equal(f.texts.length,0,'nothing texted without a handle');
+    f.store.setSetting('imessage_to','+12245550100');
+    f.work.startAgent(f.owner.id,{title:'Flights',task:'x'.repeat(2000)});
+    while(f.work.status(f.owner.id).running.length)await tick();
+    assert.equal(f.texts.length,1);
+    assert.equal(f.texts[0].to,'+12245550100');
+    assert.match(f.texts[0].body,/^Nova: Flights\n\nDone: [^]*x+… \(the rest is in Nova\)$/);
+    assert.ok(f.texts[0].body.length<1600);
+    f.sms.ok=false;
+    const failed=f.work.startAgent(f.owner.id,{title:'Hotels',task:'two'});
+    while(f.work.status(f.owner.id).running.length)await tick();
+    await tick();
+    const events=f.store.db.prepare("SELECT job_id FROM events WHERE kind='imessage'").all();
+    assert.deepEqual(events.map(e=>e.job_id),[failed]);
+    assert.notEqual(quiet,failed);
+  }finally{await f.close();}
+});
+
+test('iMessage sends through Messages with the handle and text as arguments, never as script',async()=>{
+  let seen;
+  const fake=(cmd,args)=>{seen={cmd,args};return {on(event,fn){if(event==='exit')setTimeout(()=>fn(0),1);},kill(){}};};
+  assert.equal(await sendIMessage('+12245550100','Hi "there" & end tell',fake),true);
+  assert.equal(seen.cmd,'osascript');
+  assert.deepEqual(seen.args.slice(-2),['+12245550100','Hi "there" & end tell']);
+  assert.ok(!seen.args.slice(0,-2).join(' ').includes('there'));
+  const failing=()=>({on(event,fn){if(event==='exit')setTimeout(()=>fn(1),1);},kill(){}});
+  assert.equal(await sendIMessage('+12245550100','x',failing),false);
+  assert.ok(IMESSAGE_HANDLE.test('+12245550100')&&IMESSAGE_HANDLE.test('me@icloud.com'));
+  assert.ok(!IMESSAGE_HANDLE.test('2245550100')&&!IMESSAGE_HANDLE.test('+1 224'));
 });
 
 test('background agents research in parallel without the Mac and report with visuals',async()=>{

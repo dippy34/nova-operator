@@ -101,6 +101,11 @@ export class Store {
     this.event(null, 'stop', 'Remote emergency stop activated');
   }
   resume() { this.db.prepare("UPDATE settings SET value='0' WHERE key='stopped'").run(); this.event(null, 'resume', 'Locally resumed'); }
+  setting(key) { return this.db.prepare('SELECT value FROM settings WHERE key=?').get(key)?.value ?? null; }
+  setSetting(key, value) {
+    if (value === null) this.db.prepare('DELETE FROM settings WHERE key=?').run(key);
+    else this.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value);
+  }
   event(jobId, kind, description) {
     this.db.prepare('INSERT INTO events(job_id,kind,description,created_at) VALUES(?,?,?,?)').run(jobId, kind, description, now());
   }

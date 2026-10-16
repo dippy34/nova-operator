@@ -89,9 +89,29 @@ export function macNotify(title,message){
   child.on('error',()=>{});
 }
 
+export const IMESSAGE_HANDLE=/^(\+[1-9][0-9]{6,14}|[^\s@]+@[^\s@]+\.[^\s@]+)$/;
+
+export function imessageText(title,message){
+  const body=message.length>1500?`${message.slice(0,1500)}… (the rest is in Nova)`:message;
+  return `Nova: ${title}\n\n${body}`;
+}
+
+/// Texts a report through the Mac's Messages app. Resolves false when Messages can't send,
+/// for example before Core is allowed to control Messages in Privacy & Security → Automation.
+export function sendIMessage(to,text,spawnImpl=spawn){
+  return new Promise(done=>{
+    const child=spawnImpl('osascript',['-e','on run argv','-e','tell application "Messages"',
+      '-e','send (item 2 of argv) to participant (item 1 of argv) of (1st account whose service type = iMessage)',
+      '-e','end tell','-e','end run',to,text],{stdio:'ignore'});
+    const timer=setTimeout(()=>{child.kill?.();done(false);},30_000);
+    child.on('error',()=>{clearTimeout(timer);done(false);});
+    child.on('exit',code=>{clearTimeout(timer);done(code===0);});
+  });
+}
+
 /// Background agents, schedules, monitors and their reports. Research agents run in parallel;
 /// anything that needs the Mac's screen takes turns with Nova and waits while Matthew is in control.
-export function createWork(store,computer,{agent=runAgent,call,notify=macNotify,spawnImpl=spawn,tickMs=15_000,wakeMs=800}={}){
+export function createWork(store,computer,{agent=runAgent,call,notify=macNotify,text=sendIMessage,spawnImpl=spawn,tickMs=15_000,wakeMs=800}={}){
   const running=new Map(),memory=new Map();
   let caffeinate=null,awakeMode=null,timer=null,closed=false;
   const alive=()=>!closed&&store.db.isOpen;
@@ -122,6 +142,10 @@ export function createWork(store,computer,{agent=runAgent,call,notify=macNotify,
     store.db.prepare('INSERT INTO reports(device_id,job_id,source,title,message,visuals,ok,created_at) VALUES(?,?,?,?,?,?,?,?)')
       .run(device,jobId,source,title,message.slice(0,6000),shown&&shown.length<=60000?shown:null,ok?1:0,new Date().toISOString());
     notify(title,message);
+    const to=store.setting('imessage_to');
+    if(to)text(to,imessageText(title,message)).then(sent=>{
+      if(!sent&&alive())store.event(jobId,'imessage','Could not text this report; check that Nova may control Messages');
+    });
   };
   const research=async(id,task,signal,key)=>{
     const metered=meter(store,id,stoppedCheck);
