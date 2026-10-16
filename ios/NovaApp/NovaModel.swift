@@ -70,6 +70,28 @@ enum JSONValue: Decodable, CustomStringConvertible {
         }
     }
 }
+/// A visual Nova draws in place of its face. Mirrors Core's `show` tool schema.
+struct NovaVisual: Decodable, Equatable {
+    struct Function: Decodable, Equatable { let expression: String; let label: String? }
+    struct Point: Decodable, Equatable { let x: Double; let y: Double; let label: String? }
+    struct Series: Decodable, Equatable { let name: String?; let values: [Double] }
+    struct Mark: Decodable, Equatable { let shape: String; let points: [[Double]]; let size: Double?; let text: String?; let color: String? }
+    struct Step: Decodable, Equatable { let write: String; let say: String?; let highlight: Bool?; let sketch: [Mark]? }
+    struct Item: Decodable, Equatable { let title: String; let detail: String?; let symbol: String? }
+    let type: String
+    let title: String?
+    let functions: [Function]?
+    let points: [Point]?
+    let x_range: [Double]?
+    let y_range: [Double]?
+    let kind: String?
+    let labels: [String]?
+    let series: [Series]?
+    let steps: [Step]?
+    let items: [Item]?
+    let columns: [String]?
+    let rows: [[String]]?
+}
 struct NovaResult: Equatable {
     let id: String
     let text: String
@@ -132,6 +154,12 @@ final class NovaModel: ObservableObject {
     @Published var result: NovaResult?
     @Published var liveScreen: Data?
     @Published var workStarted: Date?
+    @Published var visuals: [NovaVisual] = []
+    @Published var page = 0
+    @Published var revealed: [Int:Int] = [:]
+    /// A new conversation starts each time the app launches; Core remembers within it.
+    let conversation = UUID().uuidString
+    private var pacing: Task<Void,Never>?
     private var resultTimer: Task<Void,Never>?
 
     /// Nova's latest action point, as a fraction of the screen, from "… at x, y" descriptions.
@@ -249,7 +277,7 @@ final class NovaModel: ObservableObject {
         busy = true; errorMessage = nil
         defer { busy = false }
         do {
-            let _: CreatedJob = try await request("/v1/jobs", method: "POST", body: ["type":type, "message":message])
+            let _: CreatedJob = try await request("/v1/jobs", method: "POST", body: ["type":type, "message":message, "conversation":conversation])
             await refresh()
             return true
         } catch { errorMessage = error.localizedDescription; return false }
@@ -273,11 +301,12 @@ final class NovaModel: ObservableObject {
     @discardableResult
     func send(_ message: String) async -> Bool {
         speaker.stop()
+        clearVisuals()
         return await submit(computer?.owner == true ? "computer.task" : "ai.chat", message: message)
     }
 
     func stopTask() async {
-        speaker.stop()
+        stopSpeaking()
         do { let _: EndComputerResult = try await request("/v1/computer/end", method: "POST", body: [:]); await refresh() }
         catch { errorMessage = error.localizedDescription }
     }
@@ -296,6 +325,11 @@ final class NovaModel: ObservableObject {
     }
 
     func dismissResult() { resultTimer?.cancel(); result = nil }
+    func clearVisuals() { pacing?.cancel(); visuals = []; revealed = [:]; page = 0 }
+    func stopSpeaking() {
+        speaker.stop()
+        for (index, visual) in visuals.enumerated() { revealed[index] = visual.steps?.count ?? 0 }
+    }
 
     /// Polls a free screenshot of the Mac while the live view is open.
     func watchScreen() async {
@@ -320,7 +354,7 @@ final class NovaModel: ObservableObject {
             let text = await listener.stop().trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { await send(text) }
         } else {
-            speaker.stop()
+            stopSpeaking()
             dismissResult()
             do { try await listener.start() } catch { errorMessage = error.localizedDescription }
         }
@@ -329,17 +363,21 @@ final class NovaModel: ObservableObject {
     /// Reads Nova's narration and final reply aloud once each. Anything already on
     /// screen when the app launches is treated as heard.
     private func speakNew(_ detail: NovaDetail) {
-        var lines: [(String,String)] = detail.events.filter { $0.kind == "narration" }.map { ($0.id, $0.description) }
-        if detail.status == "succeeded", let reply = detail.result?["message"] { lines.append(("\(detail.id)-reply", reply.description)) }
-        if detail.status == "failed", let error = detail.error { lines.append(("\(detail.id)-error", error)) }
-        guard var heard = spoken else { spoken = Set(lines.map(\.0)); return }
-        for (key,text) in lines where !heard.contains(key) {
-            heard.insert(key)
-            if voiceReplies && !listener.listening { speaker.say(text) }
-            if key.hasSuffix("-reply") || key.hasSuffix("-error") {
+        var lines: [(key: String, kind: String, text: String)] = detail.events.filter { ["narration","visual"].contains($0.kind) }.map { ($0.id, $0.kind, $0.description) }
+        if detail.status == "succeeded", let reply = detail.result?["message"] { lines.append(("\(detail.id)-reply", "reply", reply.description)) }
+        if detail.status == "failed", let error = detail.error { lines.append(("\(detail.id)-error", "error", error)) }
+        guard var heard = spoken else { spoken = Set(lines.map(\.key)); return }
+        for line in lines where !heard.contains(line.key) {
+            heard.insert(line.key)
+            if line.kind == "visual" {
+                if let data = line.text.data(using: .utf8), let visual = try? JSONDecoder().decode(NovaVisual.self, from: data) { present(visual) }
+                continue
+            }
+            if voiceReplies && !listener.listening { speaker.say(line.text) }
+            if line.kind == "reply" || line.kind == "error" {
                 var cost: Double?
                 if case .number(let usd)? = detail.result?["estimatedUSD"] { cost = usd }
-                result = NovaResult(id: detail.id, text: text, ok: key.hasSuffix("-reply"), cost: cost)
+                result = NovaResult(id: detail.id, text: line.text, ok: line.kind == "reply", cost: cost)
                 resultTimer?.cancel()
                 resultTimer = Task { [weak self] in
                     try? await Task.sleep(for: .seconds(20))
@@ -348,6 +386,42 @@ final class NovaModel: ObservableObject {
             }
         }
         spoken = heard
+    }
+
+    /// Queues a visual. A board is written one step at a time as Nova says each step;
+    /// the next visual appears once the board is finished.
+    private func present(_ visual: NovaVisual) {
+        let index = visuals.count
+        visuals.append(visual)
+        guard let steps = visual.steps, visual.type == "board", !steps.isEmpty else {
+            if index > 0 && visuals[index-1].type == "board" && (revealed[index-1] ?? 0) < (visuals[index-1].steps?.count ?? 0) { return }
+            withAnimation(.spring(duration: 0.6)) { page = index }
+            return
+        }
+        revealed[index] = 0
+        if index == 0 || visuals[index-1].type != "board" { page = index }
+        let advance = { [weak self] in
+            guard let self, self.visuals.indices.contains(index + 1) else { return }
+            withAnimation(.spring(duration: 0.6)) { self.page = index + 1 }
+        }
+        if voiceReplies && !listener.listening {
+            for (step, line) in steps.enumerated() {
+                speaker.say(line.say ?? line.write, onStart: { [weak self] in
+                    guard let self, self.visuals.indices.contains(index) else { return }
+                    withAnimation { self.page = index; self.revealed[index] = step + 1 }
+                }, onFinish: step == steps.count - 1 ? advance : nil)
+            }
+        } else {
+            pacing = Task { [weak self] in
+                for step in steps.indices {
+                    try? await Task.sleep(for: .seconds(step == 0 ? 0.3 : 2))
+                    if Task.isCancelled { return }
+                    withAnimation { self?.revealed[index] = step + 1 }
+                }
+                try? await Task.sleep(for: .seconds(2.5))
+                if !Task.isCancelled { advance() }
+            }
+        }
     }
 
     func unpair() {
@@ -385,19 +459,28 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         let english = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == "en-US" }
         return english.first { $0.quality == .premium } ?? english.first { $0.quality == .enhanced } ?? AVSpeechSynthesisVoice(language: "en-US")
     }()
+    private var starts: [ObjectIdentifier: () -> Void] = [:]
+    private var finishes: [ObjectIdentifier: () -> Void] = [:]
     override init() { super.init(); synthesizer.delegate = self }
-    func say(_ text: String) {
+    func say(_ text: String, onStart: (() -> Void)? = nil, onFinish: (() -> Void)? = nil) {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try? AVAudioSession.sharedInstance().setActive(true)
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = voice
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 1.05
+        starts[ObjectIdentifier(utterance)] = onStart
+        finishes[ObjectIdentifier(utterance)] = onFinish
         synthesizer.speak(utterance)
         speaking = true
     }
-    func stop() { synthesizer.stopSpeaking(at: .immediate); speaking = false }
+    func stop() { starts = [:]; finishes = [:]; synthesizer.stopSpeaking(at: .immediate); speaking = false }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        let id = ObjectIdentifier(utterance)
+        Task { @MainActor in self.speaking = true; self.starts.removeValue(forKey: id)?() }
+    }
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.speaking = synthesizer.isSpeaking }
+        let id = ObjectIdentifier(utterance)
+        Task { @MainActor in self.speaking = synthesizer.isSpeaking; self.finishes.removeValue(forKey: id)?() }
     }
 }
 

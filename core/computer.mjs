@@ -57,7 +57,7 @@ const describe=(name,input)=>{
 
 export function createComputer(store,{run=native,permissionCheck=permissions,agent=runAgent,call}={}) {
   let current=null,liveBusy=false;
-  const screens=new Map(), memory=new Map();
+  const screens=new Map(), memory=new Map(), conversations=new Map();
   const owner=()=>store.db.prepare("SELECT value FROM settings WHERE key='computer_owner'").get()?.value;
   const authorize=device=>{
     if(owner()!==device || !store.devices().some(d=>d.id===device))fail('Computer control is available only to the locally designated owner iPhone');
@@ -66,7 +66,8 @@ export function createComputer(store,{run=native,permissionCheck=permissions,age
   return {
     status(device){return {owner:owner()===device,busy:Boolean(current),task:current?.device===device?current.id:null};},
     permissions:permissionCheck,
-    async task(device,id,message,signal){
+    // Memory lasts for one conversation: the iPhone starts a new one each time the app opens.
+    async task(device,id,message,signal,conversation='default'){
       authorize(device);
       if(current)fail('Nova is already working on something. Stop it or wait for it to finish.');
       current={id,device};
@@ -77,8 +78,10 @@ export function createComputer(store,{run=native,permissionCheck=permissions,age
         const missing=[!permission.accessibility&&'Accessibility',!permission.screenRecording&&'Screen Recording'].filter(Boolean);
         if(missing.length)fail(`Nova Operator still needs ${missing.join(' and ')} access on the Mac. Open System Settings → Privacy & Security → ${missing[0]} and allow Nova Operator.`);
         await run({action:'begin'},signal);
+        if(conversations.get(device)!==conversation){memory.delete(conversations.get(device));conversations.set(device,conversation);}
+        const key=`${device}:${conversation}`;
         let spent=0;
-        const result=await agent({task:message,history:memory.get(device)??[],signal,call,
+        const result=await agent({task:message,history:memory.get(key)??[],signal,call,
           execute:async request=>{authorize(device);if(signal.aborted)fail('Task cancelled');return await run(request,signal);},
           spend:async(turn,request)=>{
             authorize(device);
@@ -94,8 +97,10 @@ export function createComputer(store,{run=native,permissionCheck=permissions,age
           },
           onNarration:text=>store.event(id,'narration',text.slice(0,600)),
           onAction:(name,input)=>store.event(id,'action',describe(name,input)),
-          onScreen:jpeg=>screens.set(device,{id,jpeg})});
-        memory.set(device,[...(memory.get(device)??[]),{role:'user',content:message.slice(0,1000)},{role:'assistant',content:result.message.slice(0,1500)}].slice(-6));
+          onScreen:jpeg=>screens.set(device,{id,jpeg}),
+          onVisual:spec=>store.event(id,'visual',spec)});
+        const shown=result.visual?`\n[Shown on the iPhone: ${JSON.stringify(result.visual).slice(0,3000)}]`:'';
+        memory.set(key,[...(memory.get(key)??[]),{role:'user',content:message.slice(0,1000)},{role:'assistant',content:result.message.slice(0,1500)+shown}].slice(-24));
         return {message:result.message,estimatedUSD:spent/1e6,actions:result.actions};
       }finally{current=null;}
     },

@@ -55,7 +55,7 @@ test('agent runs Claude computer-use calls in order without approvals and return
   assert.equal(result.message,'Done, it shows 7.');assert.equal(result.actions,1);
   assert.deepEqual(f.calls,[{action:'begin'},{action:'screenshot'},{action:'left_click',coordinate:[40,50]}]);
   const [first,second]=f.bodies;
-  assert.equal(first.model,AGENT_MODEL);assert.deepEqual(first.tools.map(t=>t.type),[TOOLSET]);
+  assert.equal(first.model,AGENT_MODEL);assert.deepEqual(first.tools.map(t=>t.type??t.name),[TOOLSET,'show']);
   assert.deepEqual(first.messages.at(-1).content.at(-1).cache_control,{type:'ephemeral'});
   const results=second.messages.at(-1).content;
   assert.equal(results[0].tool_use_id,'t1');assert.equal(results[0].toolset_name,'computer');assert.equal(results[0].content[0].type,'image');
@@ -65,6 +65,24 @@ test('agent runs Claude computer-use calls in order without approvals and return
   assert.ok(kinds.includes('narration')&&kinds.includes('action'));
   assert.deepEqual(f.control.screen(f.owner.id,id),Buffer.from('anBn','base64'));
   assert.throws(()=>f.control.screen(f.other.id,id),/owner/);
+ }finally{f.close();}
+});
+test('show displays a visual without the computer, and the conversation remembers it',async()=>{
+ const graph={type:'graph',title:'y = x^2',functions:[{expression:'x^2'}]};
+ const replies=[{stop_reason:'tool_use',usage,content:[{type:'tool_use',id:'v1',name:'show',input:graph}]},{stop_reason:'end_turn',usage,content:[{type:'text',text:'Here it is.'}]},
+  {stop_reason:'end_turn',usage,content:[{type:'text',text:'It is a parabola.'}]},{stop_reason:'end_turn',usage,content:[{type:'text',text:'Fresh start.'}]}];
+ const f=fixture({replies});
+ try{
+  const id=f.store.createJob(f.owner.id,'computer.task',{message:'graph x squared'});
+  assert.equal((await f.control.task(f.owner.id,id,'graph x squared',signal(),'conversation-1')).message,'Here it is.');
+  assert.deepEqual(f.calls,[{action:'begin'}]);
+  assert.deepEqual(JSON.parse(f.store.events(id).find(e=>e.kind==='visual').description),graph);
+  assert.equal(f.bodies[1].messages.at(-1).content[0].content[0].text,"Shown on Matthew's iPhone.");
+  await f.control.task(f.owner.id,f.store.createJob(f.owner.id,'computer.task',{message:'what is it'}),'what is it',signal(),'conversation-1');
+  const remembered=f.bodies[2].messages;
+  assert.equal(remembered[0].content,'graph x squared');assert.match(remembered[1].content,/Here it is\.[\s\S]*x\^2/);
+  await f.control.task(f.owner.id,f.store.createJob(f.owner.id,'computer.task',{message:'hi'}),'hi',signal(),'conversation-2');
+  assert.equal(f.bodies[3].messages.length,1);
  }finally{f.close();}
 });
 test('live screenshots are owner-only and never reach Claude',async()=>{

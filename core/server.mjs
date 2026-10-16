@@ -57,7 +57,7 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
     store.updateJob(id, 'running');
     try {
       const result = type === 'computer.task'
-        ? await computer.task(deviceId,id,payload.message,controller.signal)
+        ? await computer.task(deviceId,id,payload.message,controller.signal,payload.conversation)
         : type === 'ai.chat'
         ? await ai.chat(id, deviceId, payload.message, controller.signal)
         : await execute(type, payload, controller.signal);
@@ -112,6 +112,7 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
         if (!body || !types.has(body.type)) return json(res,400,{error:'Only known safe task types are supported'});
         if (['ai.chat','computer.task'].includes(body.type) && (typeof body.message !== 'string' || !body.message.trim() || body.message.length > 2000)) return json(res,400,{error:'AI messages must contain 1–2000 characters'});
         const payload = { message: ['ai.chat','computer.task'].includes(body.type) ? body.message.trim() : body.type === 'hello' ? cleanMessage(body.message ?? '') : '' };
+        if (body.type === 'computer.task' && typeof body.conversation === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(body.conversation)) payload.conversation = body.conversation;
         const id = store.createJob(device.id, body.type, payload);
         schedule(id,body.type,payload,device.id);
         return json(res,202,{id,status:'queued'});

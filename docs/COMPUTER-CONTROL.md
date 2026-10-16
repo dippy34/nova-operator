@@ -9,7 +9,9 @@ Nova controls the whole Mac without asking. Matthew chose this on 2026-10-16 (se
 3. When Nova finishes it reads its answer aloud. Turn **Speak replies** off to keep it silent.
 4. Stop it with **Stop this task** on the iPhone, **Control-Option-S** on the Mac (or **Stop Nova** in its menu-bar menu), or **Emergency stop**, which blocks Nova until `npm run resume` is run on the Mac.
 
-Nova remembers the last three exchanges, so follow-ups like "now do it again" work. Memory is cleared when Core restarts or after an emergency stop.
+Nova remembers the conversation for as long as the iPhone app stays open: each launch sends a new conversation ID, and Core keeps the last 24 messages for it (including what Nova drew). Memory is also cleared when Core restarts or after an emergency stop.
+
+The iPhone stays on Nova's face unless Nova uses the Mac or draws something. When an answer is easier to see, Claude calls the `show` tool and the face shrinks into a header while the screen becomes a graph of any functions (parsed and plotted on the iPhone), a bar, line or pie chart, a chalkboard that Nova writes one step at a time while saying each step (with simple chalk sketches), cards, or a table. Several visuals in one answer play in order and can be swiped between. Tap × to go back to the face. Visuals cost only the tokens Claude spends describing them; verified 2026-10-16 with a real board plus graph for x² − 5x + 6 ($0.027).
 
 ## How it works
 
