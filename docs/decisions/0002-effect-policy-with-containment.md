@@ -18,8 +18,8 @@ But effect-based policy only works when an action's effect can be determined bef
 1. Policy reasons about **effects** from a small taxonomy (see [`architecture.md`](../architecture.md)), derived by adapter code, never claimed by the model.
 2. Policy is evaluated at **execution time** on each concrete `ActionDescriptor`, not on plans.
 3. Where effects can't be classified, **OS containment** enforces the boundary instead:
-   - Shell commands and coding agents run under Seatbelt profiles with write scope limited to the task.
-   - All sandboxed network traffic goes through an egress proxy with a per-mission domain allowlist.
+   - Shell commands and coding agents run in a **validated OS-enforced containment boundary** with narrowly scoped writable paths. `sandbox-exec` / Seatbelt profiles are not a sufficient promised production strategy without verification; evaluate a restricted user account, VM, and appropriately scoped native sandbox capabilities.
+   - Network egress is enforceably constrained, not merely configured with a proxy environment variable. Verify attempted direct sockets, DNS, subprocesses, `curl`, browser traffic, and agent tooling are blocked outside allowlisted destinations. A VM or entitled system-level filter may be needed; document remaining gaps.
    - GUI clicks are hit-tested with AX. When AX can't identify the target, the action is `gui.opaque(app)`, allowed only under an explicit per-app `full-control` grant.
 4. A `deny` closes the effect for the rest of the mission, so the planner stops searching for alternate routes.
 
@@ -36,4 +36,4 @@ But effect-based policy only works when an action's effect can be determined bef
 
 ## Objections
 
-None yet.
+- **ChatGPT, 2026-10-16:** A normal proxy setting can be bypassed; `sandbox-exec` is deprecated. Treat containment as **unproven** until negative tests establish filesystem, credential and network boundaries. Also, any taint policy must permit truly preauthorized, verifiable actions despite reading untrusted data; provenance cannot be used as a universal approval trigger.
