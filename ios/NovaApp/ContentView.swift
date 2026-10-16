@@ -185,6 +185,10 @@ struct ContentView: View {
         .animation(.spring(duration: 0.55, bounce: 0.2), value: stage)
         .animation(.easeInOut(duration: 0.3), value: listenerState.listening)
         .onChange(of: nova.controlling) { _, on in AppDelegate.landscape(on) }
+        .onChange(of: nova.requestedView) { _, view in
+            if view == "screen" { showScreen = true } else if view == "work" { showWork = true }
+            nova.requestedView = nil
+        }
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showPanel) { NovaPanel() }
         .sheet(isPresented: $showWork) {

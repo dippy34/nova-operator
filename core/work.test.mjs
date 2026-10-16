@@ -142,7 +142,7 @@ test("Nova's own agent can start agents, schedule, list and cancel through its t
     const result=await f.computer.task(f.owner.id,job,'Research flights and remind me at 9 on weekdays',signal(),'conv-12345678',{tools,onTool,prefix:f.work.context(f.owner.id)});
     assert.equal(result.message,'Started both.');
     assert.match(lastUser(f.bodies[0]),/^\[Now: /);
-    assert.deepEqual(f.bodies[0].tools.map(t=>t.name??t.type).slice(-5),['start_agent','schedule','list_work','cancel_work','show']);
+    assert.deepEqual(f.bodies[0].tools.map(t=>t.name??t.type).slice(-6),['start_agent','schedule','open_on_iphone','list_work','cancel_work','show']);
     const results=f.bodies.find(b=>b.messages.at(-1).content[0].type==='tool_result'&&b.tools.some(t=>t.name==='start_agent')).messages.at(-1).content;
     assert.match(results[0].content[0].text,/Started background agent/);
     assert.match(results[1].content[0].text,/daily at 09:00 \(mon, tue, wed, thu, fri\)/);
@@ -151,6 +151,10 @@ test("Nova's own agent can start agents, schedule, list and cancel through its t
     while(f.work.status(f.owner.id).running.length)await tick();
     assert.match(f.work.context(f.owner.id),/Flights: Cheapest is \$120/);
     assert.match(await onTool('cancel_work',{id:schedule.id}),/Deleted the schedule Standup/);
+    const opener=f.work.tools(f.owner.id,job).onTool;
+    assert.match(await opener('open_on_iphone',{view:'control'}),/driving now/);
+    assert.deepEqual(f.store.events(job).filter(e=>e.kind==='open').map(e=>e.description),['control']);
+    await assert.rejects(opener('open_on_iphone',{view:'settings'}),/Unknown view/);
     assert.equal(f.work.status(f.owner.id).schedules.length,0);
     await assert.rejects(onTool('cancel_work',{id:'nope'}),/Nothing with that id/);
   }finally{await f.close();}

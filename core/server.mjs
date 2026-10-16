@@ -60,7 +60,7 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
     try {
       if (type === 'computer.task') await work.yieldComputer();
       const result = type === 'computer.task'
-        ? await computer.task(deviceId,id,payload.message,controller.signal,payload.conversation,{...work.tools(deviceId),prefix:work.context(deviceId)})
+        ? await computer.task(deviceId,id,payload.message,controller.signal,payload.conversation,{...work.tools(deviceId,id),prefix:work.context(deviceId)})
         : type === 'ai.chat'
         ? await ai.chat(id, deviceId, payload.message, controller.signal)
         : await execute(type, payload, controller.signal);

@@ -178,6 +178,8 @@ final class NovaModel: ObservableObject {
     /// The newest report, shown as a banner on the face for a little while.
     @Published var banner: NovaWork.Report?
     @Published var controlling = false
+    /// A view Nova asked to open: "screen" or "work".
+    @Published var requestedView: String?
     private var bannerTimer: Task<Void,Never>?
     private var seenReport: Int? = UserDefaults.standard.object(forKey: "nova.seenReport") as? Int {
         didSet { UserDefaults.standard.set(seenReport, forKey: "nova.seenReport") }
@@ -442,12 +444,16 @@ final class NovaModel: ObservableObject {
     /// Reads Nova's narration and final reply aloud once each. Anything already on
     /// screen when the app launches is treated as heard.
     private func speakNew(_ detail: NovaDetail) {
-        var lines: [(key: String, kind: String, text: String)] = detail.events.filter { ["narration","visual"].contains($0.kind) }.map { ($0.id, $0.kind, $0.description) }
+        var lines: [(key: String, kind: String, text: String)] = detail.events.filter { ["narration","visual","open"].contains($0.kind) }.map { ($0.id, $0.kind, $0.description) }
         if detail.status == "succeeded", let reply = detail.result?["message"] { lines.append(("\(detail.id)-reply", "reply", reply.description)) }
         if detail.status == "failed", let error = detail.error { lines.append(("\(detail.id)-error", "error", error)) }
         guard var heard = spoken else { spoken = Set(lines.map(\.key)); return }
         for line in lines where !heard.contains(line.key) {
             heard.insert(line.key)
+            if line.kind == "open" {
+                if line.text == "control" { takeOver() } else { requestedView = line.text }
+                continue
+            }
             if line.kind == "visual" {
                 if let data = line.text.data(using: .utf8), let visual = try? JSONDecoder().decode(NovaVisual.self, from: data) { present(visual) }
                 continue
