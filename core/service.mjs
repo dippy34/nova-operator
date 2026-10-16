@@ -14,6 +14,7 @@ const data = join(root, '.nova-data');
 const xml = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
 const launch = (...args) => execFileSync('/bin/launchctl', args, {encoding:'utf8', stdio:['ignore','pipe','pipe']});
 const loaded = () => { try { launch('print', target); return true; } catch { return false; } };
+const wait = ms => new Promise(ok => setTimeout(ok, ms));
 const command = process.argv[2];
 if (command === 'install') {
   mkdirSync(dirname(plist), {recursive:true});
@@ -39,7 +40,24 @@ if (command === 'install') {
 </dict></plist>
 `, {mode:0o600});
   execFileSync('/usr/bin/plutil', ['-lint', plist], {stdio:'inherit'});
-  launch('bootstrap', domain, plist);
+  // bootout can return before launchd releases the old job registration.
+  // Retry only that transient bootstrap error, without elevated privileges.
+  for (let attempt = 0; ; attempt++) {
+    try { launch('bootstrap', domain, plist); break; }
+    catch (error) {
+      if (attempt >= 20 || !String(error.stderr).includes('Bootstrap failed: 5:')) throw error;
+      await wait(250);
+    }
+  }
+  let ready = false;
+  for (let attempt = 0; attempt < 150; attempt++) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${env.NOVA_PORT}/v1/health`, {signal:AbortSignal.timeout(1000)});
+      if (response.ok && (await response.json()).service === 'nova-core') { ready = true; break; }
+    } catch { /* launchd may still be starting Node */ }
+    await wait(100);
+  }
+  if (!ready) throw new Error(`Login service registered but Core is not healthy. Inspect ${join(data, 'core-error.log')}`);
   console.log('Nova Core login service installed. It restarts after crashes and at login.');
   console.log(`Logs: ${data}`);
 } else if (command === 'remove') {
