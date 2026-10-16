@@ -34,6 +34,13 @@ export class Store {
         description TEXT NOT NULL, created_at TEXT NOT NULL);`);
     this.db.exec(`CREATE TABLE IF NOT EXISTS ai_usage(
       job_id TEXT PRIMARY KEY, amount_micros INTEGER NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0);`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS schedules(
+        id TEXT PRIMARY KEY, device_id TEXT NOT NULL, title TEXT NOT NULL, task TEXT NOT NULL, spec TEXT NOT NULL,
+        uses_computer INTEGER NOT NULL, monitor INTEGER NOT NULL, next_ms INTEGER, until_ms INTEGER,
+        runs INTEGER NOT NULL DEFAULT 0, last_run TEXT, last_result TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS reports(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL, job_id TEXT, source TEXT NOT NULL,
+        title TEXT NOT NULL, message TEXT NOT NULL, visuals TEXT, ok INTEGER NOT NULL, created_at TEXT NOT NULL);`);
     this.db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('stopped','0')").run();
 
   }

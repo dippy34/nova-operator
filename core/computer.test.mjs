@@ -6,8 +6,7 @@ import {tmpdir} from 'node:os';
 import {createHmac} from 'node:crypto';
 import {Store} from './db.mjs';
 import {createComputer,signedEnvelope,TURN_RESERVATION_MICROS} from './computer.mjs';
-import {AGENT_MODEL,TOOLSET,agentCost} from './agent.mjs';
-import {AI_BUDGET_MICROS} from './ai.mjs';
+import {AGENT_MODEL,TOOLSET,agentCost,callClaude} from './agent.mjs';
 import {makeNova} from './server.mjs';
 
 const usage={input_tokens:1000,cache_creation_input_tokens:2000,cache_read_input_tokens:10000,output_tokens:200};
@@ -55,7 +54,7 @@ test('agent runs Claude computer-use calls in order without approvals and return
   assert.equal(result.message,'Done, it shows 7.');assert.equal(result.actions,1);
   assert.deepEqual(f.calls,[{action:'begin'},{action:'screenshot'},{action:'left_click',coordinate:[40,50]}]);
   const [first,second]=f.bodies;
-  assert.equal(first.model,AGENT_MODEL);assert.deepEqual(first.tools.map(t=>t.type??t.name),[TOOLSET,'show']);
+  assert.equal(first.model,AGENT_MODEL);assert.deepEqual(first.tools.map(t=>t.type??t.name),[TOOLSET,'web_search_20260318','web_fetch_20260318','show']);
   assert.deepEqual(first.messages.at(-1).content.at(-1).cache_control,{type:'ephemeral'});
   const results=second.messages.at(-1).content;
   assert.equal(results[0].tool_use_id,'t1');assert.equal(results[0].toolset_name,'computer');assert.equal(results[0].content[0].type,'image');
@@ -93,12 +92,32 @@ test('live screenshots are owner-only and never reach Claude',async()=>{
   assert.deepEqual(f.calls,[{action:'screenshot'}]);assert.equal(f.bodies.length,0);
  }finally{f.close();}
 });
-test('the allowance is reserved before each Claude turn and blocks once exhausted',async()=>{
+test('every turn is metered with no spending cap, and empty credits are explained',async()=>{
  const f=fixture();
  try{
-  f.store.reserveAI('earlier',AI_BUDGET_MICROS-TURN_RESERVATION_MICROS+1,AI_BUDGET_MICROS);
-  await assert.rejects(f.control.task(f.owner.id,'job-000000000001','press 7',signal()),/allowance/);
-  assert.equal(f.bodies.length,0);
+  f.store.reserveAI('earlier',50_000_000_000,Number.POSITIVE_INFINITY);
+  const id=f.store.createJob(f.owner.id,'computer.task',{message:'press 7'});
+  await f.control.task(f.owner.id,id,'press 7',signal());
+  assert.equal(f.store.aiSpent(),50_000_000_000+2*agentCost(usage));
+  assert.equal(agentCost({...usage,server_tool_use:{web_search_requests:3}}),agentCost(usage)+30_000);
+  const fetchImpl=async()=>Response.json({type:'error',error:{type:'invalid_request_error',message:'Your credit balance is too low to access the Anthropic API.'}},{status:400});
+  await assert.rejects(callClaude({},{signal:signal(),fetchImpl,key:'k'}),/credits ran out/);
+ }finally{f.close();}
+});
+test('taking over sends direct input, ends background work and is validated',async()=>{
+ const f=fixture();
+ try{
+  await f.control.input(f.owner.id,{action:'left_click',coordinate:[100.4,200.6]});
+  assert.deepEqual(f.calls,[{action:'begin'},{action:'left_click',direct:true,coordinate:[100,201]}]);
+  assert.equal(f.control.controlled(),true);
+  await assert.rejects(f.control.task(f.owner.id,'job-000000000003','check mail',signal(),'schedule-x',{background:true}),/controlling the Mac/);
+  for(const bad of [{action:'shell',text:'ls'},{action:'left_click'},{action:'key',text:'cmd+$(rm)'},{action:'type',text:''},{action:'scroll',coordinate:[1,1],scroll_direction:'sideways'}])
+   await assert.rejects(f.control.input(f.owner.id,bad));
+  await assert.rejects(f.control.input(f.other.id,{action:'left_click',coordinate:[1,1]}),/owner/);
+  await f.control.input(f.owner.id,{action:'scroll',coordinate:[5,5],scroll_direction:'down',scroll_amount:99});
+  assert.deepEqual(f.calls.at(-1),{action:'scroll',direct:true,coordinate:[5,5],scroll_direction:'down',scroll_amount:15});
+  f.control.release(f.owner.id);
+  assert.equal(f.control.controlled(),false);
  }finally{f.close();}
 });
 test('Control-Option-S on the Mac ends the task instead of being retried',async()=>{

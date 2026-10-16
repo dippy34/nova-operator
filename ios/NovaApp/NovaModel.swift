@@ -17,13 +17,14 @@ struct NovaComputerStatus: Decodable {
     let owner: Bool
     let busy: Bool
     let task: String?
+    let controlled: Bool?
 }
 struct EndComputerResult: Decodable { let ended: Bool }
 struct NovaAIStatus: Decodable {
     let configured: Bool
     let model: String
     let usedUSD: Double
-    let allowanceUSD: Double
+    let allowanceUSD: Double?
     let busy: Bool
 }
 struct NovaJob: Decodable, Identifiable {
@@ -98,6 +99,19 @@ struct NovaResult: Equatable {
     let ok: Bool
     let cost: Double?
 }
+/// Background agents, schedules and their reports, from `/v1/work`.
+struct NovaWork: Decodable, Equatable {
+    struct Run: Decodable, Equatable, Identifiable { let id: String; let title: String; let kind: String; let started: String; let usesComputer: Bool; let latest: String? }
+    struct Schedule: Decodable, Equatable, Identifiable { let id: String; let title: String; let `repeat`: String; let next: String; let usesComputer: Bool; let monitor: Bool; let runs: Int; let lastRun: String?; let lastResult: String? }
+    struct Report: Decodable, Equatable, Identifiable { let id: Int; let title: String; let message: String; let ok: Bool; let source: String; let created_at: String; let visuals: [NovaVisual] }
+    let running: [Run]
+    let schedules: [Schedule]
+    let reports: [Report]
+    let awake: Bool
+}
+struct WorkMessage: Decodable { let message: String }
+struct InputResult: Decodable { let text: String? }
+struct ReleaseResult: Decodable { let released: Bool }
 struct PairResult: Decodable { let id: String; let token: String }
 struct JobsResponse: Decodable { let jobs: [NovaJob] }
 struct CreatedJob: Decodable { let id: String; let status: String }
@@ -160,6 +174,14 @@ final class NovaModel: ObservableObject {
     /// A new conversation starts each time the app launches; Core remembers within it.
     let conversation = UUID().uuidString
     private var pacing: Task<Void,Never>?
+    @Published var work: NovaWork?
+    /// The newest report, shown as a banner on the face for a little while.
+    @Published var banner: NovaWork.Report?
+    @Published var controlling = false
+    private var bannerTimer: Task<Void,Never>?
+    private var seenReport: Int? = UserDefaults.standard.object(forKey: "nova.seenReport") as? Int {
+        didSet { UserDefaults.standard.set(seenReport, forKey: "nova.seenReport") }
+    }
     private var resultTimer: Task<Void,Never>?
 
     /// Nova's latest action point, as a fraction of the screen, from "… at x, y" descriptions.
@@ -196,7 +218,7 @@ final class NovaModel: ObservableObject {
         return url
     }
 
-    private func request<T: Decodable>(_ path: String, method: String = "GET", body: [String: String]? = nil, authenticated: Bool = true) async throws -> T {
+    private func request<T: Decodable>(_ path: String, method: String = "GET", body: [String: Any]? = nil, authenticated: Bool = true) async throws -> T {
         let base = try baseURL()
         guard let url = URL(string: path, relativeTo: base)?.absoluteURL else { throw NovaError.invalidURL }
         var req = URLRequest(url: url)
@@ -251,6 +273,11 @@ final class NovaModel: ObservableObject {
             jobs = list.jobs; stopped = status.stopped; connection = stopped ? "Emergency stopped" : "Mac connected"
             ai = status.ai
             computer = status.computer
+            if computer?.owner == true {
+                let latest: NovaWork = try await request("/v1/work")
+                if latest != work { work = latest }
+                announceReports(latest.reports)
+            }
             if let latest = jobs.first(where: { ["ai.chat","computer.task"].contains($0.type) }) {
                 let detail: NovaDetail = try await request("/v1/jobs/\(latest.id)")
                 chat = detail
@@ -301,6 +328,7 @@ final class NovaModel: ObservableObject {
     @discardableResult
     func send(_ message: String) async -> Bool {
         speaker.stop()
+        controlling = false
         clearVisuals()
         return await submit(computer?.owner == true ? "computer.task" : "ai.chat", message: message)
     }
@@ -331,12 +359,63 @@ final class NovaModel: ObservableObject {
         for (index, visual) in visuals.enumerated() { revealed[index] = visual.steps?.count ?? 0 }
     }
 
-    /// Polls a free screenshot of the Mac while the live view is open.
+    /// Polls a free screenshot of the Mac while the live view is open, faster while Matthew drives.
     func watchScreen() async {
         while !Task.isCancelled {
             if let data = try? await fetchData("/v1/computer/live") { liveScreen = data }
-            try? await Task.sleep(for: .milliseconds(700))
+            try? await Task.sleep(for: .milliseconds(controlling ? 150 : 700))
         }
+    }
+
+    /// Matthew's own mouse and keyboard input. The first input ends whatever Nova was doing.
+    func input(_ body: [String: Any]) async {
+        do {
+            let _: InputResult = try await request("/v1/computer/input", method: "POST", body: body)
+            if let data = try? await fetchData("/v1/computer/live") { liveScreen = data }
+        } catch { errorMessage = error.localizedDescription }
+    }
+    func takeOver() { stopSpeaking(); controlling = true }
+    func handBack() async {
+        controlling = false
+        do { let _: ReleaseResult = try await request("/v1/computer/release", method: "POST", body: [:]) }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    func cancelWork(_ id: String) async {
+        do {
+            let _: WorkMessage = try await request("/v1/work/cancel", method: "POST", body: ["id": id])
+            await refresh()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    /// Reads each new report aloud once and shows it on the face. Reports that arrived
+    /// before this iPhone first saw the list are treated as already read.
+    private func announceReports(_ reports: [NovaWork.Report]) {
+        guard let newest = reports.first?.id else { return }
+        guard let seen = seenReport else { seenReport = newest; return }
+        let fresh = reports.filter { $0.id > seen }.reversed()
+        guard !fresh.isEmpty else { return }
+        seenReport = newest
+        for report in fresh {
+            if voiceReplies && !listener.listening && !controlling { speaker.say("\(report.title). \(Self.spoken(report.message))") }
+            if !report.visuals.isEmpty && !working && !listener.listening && !controlling { clearVisuals(); report.visuals.forEach(present) }
+        }
+        banner = fresh.last
+        bannerTimer?.cancel()
+        bannerTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(25))
+            if !Task.isCancelled { withAnimation { self?.banner = nil } }
+        }
+    }
+    func showReport(_ report: NovaWork.Report) {
+        clearVisuals(); report.visuals.forEach(present)
+    }
+    /// The first few sentences, so a long report isn't read out in full.
+    private static func spoken(_ text: String) -> String {
+        let line = text.split(separator: "\n").first.map(String.init) ?? text
+        guard line.count > 320 else { return line }
+        let cut = line.prefix(320)
+        return cut.lastIndex(of: ".").map { String(cut[...$0]) } ?? String(cut)
     }
 
     private func fetchData(_ path: String) async throws -> Data {
@@ -425,6 +504,7 @@ final class NovaModel: ObservableObject {
     }
 
     func unpair() {
+        work = nil; banner = nil
         speaker.stop(); KeychainToken.clear(); jobs = []; chat = nil; ai = nil; computer = nil; computerScreen = nil; connection = "Not connected"; errorMessage = nil
     }
 }

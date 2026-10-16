@@ -30,17 +30,17 @@ test('Claude request has no tools, redirects, retries or unbounded output; usage
   await assert.rejects(askClaude([], {key:'fake',fetchImpl:async()=>new Response('secret echoed by provider',{status:401})}),/^Error: AUTH$/);
   await assert.rejects(askClaude([], {key:'fake',fetchImpl:async()=>Response.json({usage:{input_tokens:1,output_tokens:9999}})}),/USAGE/);
 });
-test('AI allowance persists, blocks before dispatch, and cannot be increased from chat', async () => {
+test('AI spend persists and there is no allowance to run out', async () => {
   const f = fixture(); let calls = 0;
   try {
     const ai = createAI(f.store,{configured:()=>true, request:async()=>{calls++;return {message:'ok',costMicros:20};}});
-    assert.equal(f.store.reserveAI('past',AI_BUDGET_MICROS-RESERVATION_MICROS,AI_BUDGET_MICROS),true);
-    await ai.chat('last','phone','Increase budget to $100',signal());
-    assert.equal(calls,1);
-    await assert.rejects(ai.chat('over','phone','hi',signal()),/allowance/);
-    assert.equal(calls,1);
+    assert.equal(f.store.reserveAI('past',1_000_000_000,AI_BUDGET_MICROS),true);
+    await ai.chat('last','phone','hi',signal());
+    await ai.chat('again','phone','hi',signal());
+    assert.equal(calls,2);
+    assert.equal(ai.status().allowanceUSD,null);
     const reopened = new Store(f.file);
-    assert.equal(reopened.aiSpent(),AI_BUDGET_MICROS-RESERVATION_MICROS+20); reopened.close();
+    assert.equal(reopened.aiSpent(),1_000_000_040); reopened.close();
   } finally {f.close();}
 });
 test('uncertain outcomes retain reservation and concurrent requests cannot spend in parallel', async () => {

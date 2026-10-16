@@ -207,6 +207,10 @@ func perform(_ request: [String:Any]) async throws -> [String:Any] {
         return display.point(pair[0],pair[1])
     }
     let cursor=NovaCursor.shared
+    // Matthew's own input from the iPhone moves the real pointer, without Nova's cursor.
+    let direct=request["direct"] as? Bool == true
+    func fly(_ p: CGPoint) async { if !direct { await cursor.fly(to:p) } }
+    func restore(_ p: CGPoint) async { if !direct { await restorePointer(p) } }
     defer { if heldAt == nil { cursor.idle() } }
     switch action {
     case "screenshot":
@@ -221,14 +225,14 @@ func perform(_ request: [String:Any]) async throws -> [String:Any] {
         let (button,down,up):(CGMouseButton,CGEventType,CGEventType)=action == "right_click" ? (.right,.rightMouseDown,.rightMouseUp) : action == "middle_click" ? (.center,.otherMouseDown,.otherMouseUp) : (.left,.leftMouseDown,.leftMouseUp)
         let count=action == "double_click" ? 2 : action == "triple_click" ? 3 : 1
         let real=realPointer()
-        await cursor.fly(to:p)
+        await fly(p)
         mouse(.mouseMoved,p)
         for click in 1...count { mouse(down,p,button,clicks:click,flags:flags); mouse(up,p,button,clicks:click,flags:flags) }
-        cursor.view.pulse(); lastPoint=p
-        await restorePointer(real)
+        if !direct { cursor.view.pulse() }; lastPoint=p
+        await restore(real)
     case "mouse_move":
         guard let p=try coordinate() else { try deny("Missing coordinate") }
-        await cursor.fly(to:p)
+        await fly(p)
         if heldAt != nil { mouse(.leftMouseDragged,p); heldAt=p } else { mouse(.mouseMoved,p) }
         lastPoint=p
     case "left_mouse_down":
@@ -240,16 +244,16 @@ func perform(_ request: [String:Any]) async throws -> [String:Any] {
     case "left_click_drag":
         guard let start=try coordinate("start_coordinate"), let end=try coordinate() else { try deny("Missing drag coordinates") }
         let flags=try modifiers(request["text"] as? String), real=realPointer()
-        await cursor.fly(to:start)
+        await fly(start)
         mouse(.mouseMoved,start); mouse(.leftMouseDown,start,flags:flags)
         for step in 1...16 {
             let t=CGFloat(step)/16, p=CGPoint(x:start.x+(end.x-start.x)*t,y:start.y+(end.y-start.y)*t)
             mouse(.leftMouseDragged,p,flags:flags)
-            cursor.panel.setFrameOrigin(cursor.origin(p))
+            if !direct { cursor.panel.setFrameOrigin(cursor.origin(p)) }
             try? await Task.sleep(for:.milliseconds(20))
         }
         mouse(.leftMouseUp,end,flags:flags); lastPoint=end
-        await restorePointer(real)
+        await restore(real)
     case "cursor_position":
         return ["text":"\(display.image(lastPoint ?? realPointer()))"]
     case "scroll":
@@ -257,7 +261,7 @@ func perform(_ request: [String:Any]) async throws -> [String:Any] {
         guard let direction=request["scroll_direction"] as? String, ["up","down","left","right"].contains(direction) else { try deny("Invalid scroll direction") }
         let amount=Int32(max(1,min(30,(request["scroll_amount"] as? Double ?? 3))))
         let real=realPointer()
-        await cursor.fly(to:p); mouse(.mouseMoved,p)
+        await fly(p); mouse(.mouseMoved,p)
         for _ in 0..<amount {
             let vertical:Int32=direction == "up" ? 3 : direction == "down" ? -3 : 0, horizontal:Int32=direction == "left" ? 3 : direction == "right" ? -3 : 0
             let event=CGEvent(scrollWheelEvent2Source:source,units:.line,wheelCount:2,wheel1:vertical,wheel2:horizontal,wheel3:0)
@@ -265,7 +269,7 @@ func perform(_ request: [String:Any]) async throws -> [String:Any] {
             try? await Task.sleep(for:.milliseconds(15))
         }
         lastPoint=p
-        await restorePointer(real)
+        await restore(real)
     case "type":
         guard let text=request["text"] as? String, !text.isEmpty, text.count <= 5000 else { try deny("Type 1–5000 characters") }
         await typeText(text)

@@ -12,7 +12,6 @@ export const binary=join(root,'.nova-data','Nova Operator.app','Contents','MacOS
 const keyFile=join(root,'.nova-data','operator.key');
 export const socketPath=join(homedir(),'Library','Application Support','Nova Operator','operator.sock');
 export const TURN_RESERVATION_MICROS=300_000; // Upper bound for one Sonnet turn, settled to actual usage.
-export const TASK_CAP_MICROS=1_500_000;
 const NOT_RUNNING='Nova Operator is not running on the Mac. Run npm run operator:install, or open Nova Operator.app.';
 const fail=text=>{throw new Error(text);};
 
@@ -55,8 +54,31 @@ const describe=(name,input)=>{
   return `${name.replaceAll('_',' ')}${at}`;
 };
 
+/// Meters one job's Claude turns: reserves an upper bound before each call and settles to actual usage.
+export function meter(store,id,check=()=>{}){
+  let spent=0;
+  return {
+    get spent(){return spent;},
+    async spend(turn,request){
+      check();
+      const reservation=`${id}:${turn}`;
+      store.reserveAI(reservation,TURN_RESERVATION_MICROS,AI_BUDGET_MICROS);
+      let data;
+      // Unbilled provider errors release the hold; timeouts keep it because billing is unknown.
+      try{data=await request();}catch(error){if(error.unbilled)store.settleAI(reservation,0);throw error;}
+      const cost=agentCost(data.usage);
+      store.settleAI(reservation,cost);spent+=cost;
+      return data;
+    }
+  };
+}
+
+const INPUT_ACTIONS=new Set(['left_click','double_click','right_click','left_click_drag','mouse_move','scroll','type','key']);
+const CONTROL_MS=120_000;
+const pair=value=>Array.isArray(value)&&value.length===2&&value.every(n=>Number.isFinite(n)&&n>=0&&n<100000)?value.map(Math.round):null;
+
 export function createComputer(store,{run=native,permissionCheck=permissions,agent=runAgent,call}={}) {
-  let current=null,liveBusy=false;
+  let current=null,liveBusy=false,controlledUntil=0;
   const screens=new Map(), memory=new Map(), conversations=new Map();
   const owner=()=>store.db.prepare("SELECT value FROM settings WHERE key='computer_owner'").get()?.value;
   const authorize=device=>{
@@ -64,13 +86,18 @@ export function createComputer(store,{run=native,permissionCheck=permissions,age
     if(store.stopped())fail('Nova is emergency stopped');
   };
   return {
-    status(device){return {owner:owner()===device,busy:Boolean(current),task:current?.device===device?current.id:null};},
+    status(device){return {owner:owner()===device,busy:Boolean(current),task:current?.device===device?current.id:null,controlled:this.controlled()};},
     permissions:permissionCheck,
+    busy(){return current?{...current}:null;},
+    controlled(){return Date.now()<controlledUntil;},
     // Memory lasts for one conversation: the iPhone starts a new one each time the app opens.
-    async task(device,id,message,signal,conversation='default'){
+    // Background runs (schedules) keep their own memory and never evict the iPhone's conversation.
+    async task(device,id,message,signal,conversation='default',{tools,onTool,prefix='',background=false}={}){
       authorize(device);
       if(current)fail('Nova is already working on something. Stop it or wait for it to finish.');
-      current={id,device};
+      if(background&&this.controlled())fail('Matthew is controlling the Mac');
+      current={id,device,background};
+      if(!background)controlledUntil=0;
       try{
         const permission=await permissionCheck();
         if(!permission.installed&&permission.installed!==undefined)fail('Build the signed Nova Operator Mac app first.');
@@ -78,33 +105,44 @@ export function createComputer(store,{run=native,permissionCheck=permissions,age
         const missing=[!permission.accessibility&&'Accessibility',!permission.screenRecording&&'Screen Recording'].filter(Boolean);
         if(missing.length)fail(`Nova Operator still needs ${missing.join(' and ')} access on the Mac. Open System Settings → Privacy & Security → ${missing[0]} and allow Nova Operator.`);
         await run({action:'begin'},signal);
-        if(conversations.get(device)!==conversation){memory.delete(conversations.get(device));conversations.set(device,conversation);}
         const key=`${device}:${conversation}`;
-        let spent=0;
-        const result=await agent({task:message,history:memory.get(key)??[],signal,call,
+        if(!background&&conversations.get(device)!==key){memory.delete(conversations.get(device));conversations.set(device,key);}
+        const metered=meter(store,id,()=>authorize(device));
+        const result=await agent({task:prefix+message,history:memory.get(key)??[],signal,call,tools,onTool,
           execute:async request=>{authorize(device);if(signal.aborted)fail('Task cancelled');return await run(request,signal);},
-          spend:async(turn,request)=>{
-            authorize(device);
-            if(spent+TURN_RESERVATION_MICROS>TASK_CAP_MICROS)fail(`I stopped because this task reached its $${TASK_CAP_MICROS/1e6} limit. Ask me to keep going if you want.`);
-            const reservation=`${id}:${turn}`;
-            if(!store.reserveAI(reservation,TURN_RESERVATION_MICROS,AI_BUDGET_MICROS))fail(`Nova reached its $${AI_BUDGET_MICROS/1e6} AI allowance.`);
-            let data;
-            // Unbilled provider errors release the hold; timeouts keep it because billing is unknown.
-            try{data=await request();}catch(error){if(error.unbilled)store.settleAI(reservation,0);throw error;}
-            const cost=agentCost(data.usage);
-            store.settleAI(reservation,cost);spent+=cost;
-            return data;
-          },
+          spend:metered.spend,
           onNarration:text=>store.event(id,'narration',text.slice(0,600)),
           onAction:(name,input)=>store.event(id,'action',describe(name,input)),
           onScreen:jpeg=>screens.set(device,{id,jpeg}),
           onVisual:spec=>store.event(id,'visual',spec)});
         const shown=result.visual?`\n[Shown on the iPhone: ${JSON.stringify(result.visual).slice(0,3000)}]`:'';
-        memory.set(key,[...(memory.get(key)??[]),{role:'user',content:message.slice(0,1000)},{role:'assistant',content:result.message.slice(0,1500)+shown}].slice(-24));
-        return {message:result.message,estimatedUSD:spent/1e6,actions:result.actions};
+        memory.set(key,[...(memory.get(key)??[]),{role:'user',content:message.slice(0,1000)},{role:'assistant',content:result.message.slice(0,1500)+shown}].slice(background?-8:-24));
+        return {message:result.message,estimatedUSD:metered.spent/1e6,actions:result.actions,visuals:result.visuals};
       }finally{current=null;}
     },
-    stop(){current=null;screens.clear();memory.clear();},
+    forget(conversationKey){memory.delete(conversationKey);},
+    stop(){current=null;controlledUntil=0;screens.clear();memory.clear();},
+    /// Matthew's own input from the iPhone. Background work waits while he is in control.
+    async input(device,request){
+      authorize(device);
+      const action=String(request?.action??'');
+      if(!INPUT_ACTIONS.has(action))fail('Unsupported input');
+      const clean={action,direct:true};
+      if(request.coordinate!==undefined&&!(clean.coordinate=pair(request.coordinate)))fail('Invalid coordinate');
+      if(action==='left_click_drag'&&!(clean.start_coordinate=pair(request.start_coordinate)))fail('Invalid drag start');
+      if(['left_click','double_click','right_click','left_click_drag','mouse_move'].includes(action)&&!clean.coordinate)fail('Missing coordinate');
+      if(action==='scroll'){
+        if(!['up','down','left','right'].includes(request.scroll_direction))fail('Invalid scroll direction');
+        clean.scroll_direction=request.scroll_direction;
+        clean.scroll_amount=Math.max(1,Math.min(15,Math.round(Number(request.scroll_amount)||3)));
+      }
+      if(action==='type'){if(typeof request.text!=='string'||!request.text||request.text.length>1000)fail('Type 1–1000 characters');clean.text=request.text;}
+      if(action==='key'){if(typeof request.text!=='string'||!/^[A-Za-z0-9_+\-=\[\];',./`\\ ]{1,40}$/.test(request.text))fail('Invalid key');clean.text=request.text;}
+      controlledUntil=Date.now()+CONTROL_MS;
+      await run({action:'begin'});
+      return await run(clean);
+    },
+    release(device){authorize(device);controlledUntil=0;},
     // A fresh screenshot for the iPhone's live view. Never goes to Claude.
     async live(device){
       authorize(device);

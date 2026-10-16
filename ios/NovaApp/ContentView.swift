@@ -104,7 +104,7 @@ struct EdgeGlow: View {
     }
 }
 
-enum Stage { case face, progress, screen, visual, result }
+enum Stage { case face, progress, screen, control, visual, result }
 
 struct ContentView: View {
     @EnvironmentObject private var nova: NovaModel
@@ -112,6 +112,7 @@ struct ContentView: View {
     @ObservedObject private var speakerState: Speaker
     @State private var showPanel = false
     @State private var showScreen = false
+    @State private var showWork = false
     @Namespace private var space
     init(nova: NovaModel) { listenerState = nova.listener; speakerState = nova.speaker }
 
@@ -120,6 +121,7 @@ struct ContentView: View {
     /// Nova stays a face unless it is using the Mac or drawing something.
     private var stage: Stage {
         if listenerState.listening { return nova.visuals.isEmpty ? .face : .visual }
+        if nova.controlling { return .control }
         if showScreen { return .screen }
         if computerTask && usedComputer { return .progress }
         if !nova.visuals.isEmpty { return .visual }
@@ -139,13 +141,23 @@ struct ContentView: View {
             Color(red:0.02,green:0.03,blue:0.06).ignoresSafeArea()
             if nova.paired {
                 if stage == .face {
-                    NovaFace(mood: mood)
-                        .matchedGeometryEffect(id: "face", in: space)
+                    ZStack {
+                        WorkOrbit(count: nova.work?.running.count ?? 0)
+                        NovaFace(mood: mood)
+                            .matchedGeometryEffect(id: "face", in: space)
+                    }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .contentShape(Rectangle())
                         .onTapGesture { Task { await nova.tapFace() } }
                         .onLongPressGesture { showPanel = true }
-                        .gesture(DragGesture(minimumDistance: 40).onEnded { if $0.translation.height < -60 && nova.computer?.owner == true { showScreen = true } })
+                        .gesture(DragGesture(minimumDistance: 40).onEnded { drag in
+                            guard nova.computer?.owner == true else { return }
+                            if drag.translation.height < -60 { showScreen = true }
+                            else if drag.translation.width < -60 { showWork = true }
+                        })
+                    faceExtras
+                } else if stage == .control {
+                    ControlStage(mood: mood)
                 } else {
                     VStack(spacing: 18) {
                         header
@@ -153,12 +165,13 @@ struct ContentView: View {
                             switch stage {
                             case .progress: ProgressStage()
                             case .screen: ScreenStage(inControl: computerTask)
+                            case .control: ControlStage()
                             case .visual: VisualStage()
                             default: ResultStage()
                             }
                         }
                         .transition(.asymmetric(insertion: .scale(scale: 0.6, anchor: .top).combined(with: .opacity), removal: .opacity))
-                        if stage != .visual { controls }
+                        if ![.visual, .control].contains(stage) { controls }
                     }
                     .padding(.horizontal)
                 }
@@ -171,8 +184,16 @@ struct ContentView: View {
         }
         .animation(.spring(duration: 0.55, bounce: 0.2), value: stage)
         .animation(.easeInOut(duration: 0.3), value: listenerState.listening)
+        .onChange(of: nova.controlling) { _, on in AppDelegate.landscape(on) }
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showPanel) { NovaPanel() }
+        .sheet(isPresented: $showWork) {
+            NavigationStack {
+                WorkView(onShow: { showWork = false })
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showWork = false } } }
+            }
+            .presentationDragIndicator(.visible)
+        }
         .alert("Nova", isPresented:Binding(get:{nova.errorMessage != nil && !showPanel}, set:{ if !$0 {nova.errorMessage = nil} })) {
             Button("OK") {nova.errorMessage = nil}
         } message: {Text(nova.errorMessage ?? "")}
@@ -200,7 +221,9 @@ struct ContentView: View {
             }
             Spacer()
             Button {
-                if stage == .visual { nova.speaker.stop(); nova.clearVisuals() } else { showScreen = false; nova.dismissResult() }
+                if stage == .visual { nova.speaker.stop(); nova.clearVisuals() }
+                else if stage == .control { Task { await nova.handBack() } }
+                else { showScreen = false; nova.dismissResult() }
             } label: {
                 Image(systemName: "xmark").font(.headline).padding(10).background(.white.opacity(0.08), in: Circle())
             }.accessibilityLabel("Back to Nova's face")
@@ -211,6 +234,7 @@ struct ContentView: View {
         switch stage {
         case .screen: computerTask ? "Nova is in control" : "Your Mac"
         case .progress: "Working on it"
+        case .control: "You're driving"
         case .visual: nova.visuals.indices.contains(nova.page) ? nova.visuals[nova.page].title ?? "Nova" : "Nova"
         default: nova.result?.ok == false ? "Something went wrong" : "Done"
         }
@@ -222,6 +246,7 @@ struct ContentView: View {
             return "\(steps) step\(steps == 1 ? "" : "s") · \(seconds / 60):\(String(format: "%02d", seconds % 60))"
         }
         if stage == .screen { return "Live view" }
+        if stage == .control { return "Tap to click · hold to right-click" }
         if stage == .visual { return nova.visuals.count > 1 ? "\(nova.page + 1) of \(nova.visuals.count)" : "" }
         if let cost = nova.result?.cost { return String(format: "\(steps) steps · $%.3f", cost) }
         return ""
@@ -236,6 +261,11 @@ struct ContentView: View {
                 }
                 .buttonStyle(.bordered).tint(.cyan)
             }
+            if stage == .screen {
+                Button { showScreen = false; nova.takeOver() } label: {
+                    Label("Take over", systemImage: "hand.point.up.left.fill").frame(maxWidth: .infinity)
+                }.buttonStyle(.borderedProminent).tint(.cyan)
+            }
             if computerTask {
                 Button(role: .destructive) { Task { await nova.stopTask() } } label: {
                     Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity)
@@ -244,6 +274,47 @@ struct ContentView: View {
         }
         .controlSize(.large)
         .padding(.bottom, 8)
+    }
+    /// A banner for the newest report, and a pill summarizing background work. Both open the Work view.
+    @ViewBuilder private var faceExtras: some View {
+        VStack {
+            if let report = nova.banner {
+                Button { showWork = true } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: report.ok ? "tray.full.fill" : "exclamationmark.triangle.fill")
+                            .font(.title3).foregroundStyle(report.ok ? .cyan : .orange)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(report.title).font(.subheadline.bold())
+                            Text(report.message).font(.caption).foregroundStyle(.secondary).lineLimit(3).multilineTextAlignment(.leading)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(14)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20))
+                }
+                .buttonStyle(.plain)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+            Spacer()
+            if let work = nova.work, !(work.running.isEmpty && work.schedules.isEmpty) {
+                Button { showWork = true } label: {
+                    Label(workSummary(work), systemImage: work.running.isEmpty ? "calendar.badge.clock" : "sparkles")
+                        .font(.footnote.weight(.medium))
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(.white.opacity(0.08), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding()
+        .animation(.spring(duration: 0.5), value: nova.banner)
+    }
+    private func workSummary(_ work: NovaWork) -> String {
+        var parts: [String] = []
+        if !work.running.isEmpty { parts.append("\(work.running.count) working") }
+        if !work.schedules.isEmpty { parts.append("\(work.schedules.count) scheduled") }
+        return parts.joined(separator: " · ")
     }
     private var pairing: some View {
         VStack(alignment:.leading,spacing:12) {
@@ -834,6 +905,313 @@ struct TableView: View {
     }
 }
 
+/// Matthew drives the Mac from the iPhone: tap to click, double-tap to double-click,
+/// press and hold to right-click, pinch to zoom, the side pad scrolls, and the keyboard types.
+struct ControlStage: View {
+    @EnvironmentObject private var nova: NovaModel
+    var mood: FaceMood = .idle
+    @State private var typing = ""
+    @State private var last: CGPoint?
+    @FocusState private var keyboard: Bool
+    private let keys: [(String, String)] = [("return","⏎"), ("backspace","⌫"), ("tab","⇥"), ("escape","esc"), ("left","←"), ("up","↑"), ("down","↓"), ("right","→"),
+                                            ("cmd+space","⌘ Space"), ("cmd+tab","⌘ Tab"), ("cmd+c","⌘C"), ("cmd+v","⌘V"), ("cmd+z","⌘Z"), ("cmd+w","⌘W")]
+    var body: some View {
+        GeometryReader { geometry in
+            if geometry.size.width > geometry.size.height {
+                HStack(spacing: 10) {
+                    screen
+                    VStack(spacing: 10) {
+                        header
+                        ScrollView {
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6) { keyButtons }
+                        }
+                        typingRow
+                    }
+                    .frame(width: 236)
+                }
+                .padding(.vertical, 6)
+            } else {
+                VStack(spacing: 10) {
+                    header
+                    screen
+                    Label("Turn your iPhone sideways for a bigger screen", systemImage: "rotate.right").font(.caption).foregroundStyle(.secondary)
+                    ScrollView(.horizontal, showsIndicators: false) { HStack(spacing: 8) { keyButtons } }
+                    typingRow
+                }
+                .padding(.bottom, 8)
+            }
+        }
+        .padding(.horizontal)
+        .task { await nova.watchScreen() }
+    }
+    private var header: some View {
+        HStack(spacing: 10) {
+            NovaFace(mood: mood, size: 0.2).frame(width: 52, height: 52)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("You're driving").font(.headline)
+                Text("Tap to click · hold to right-click").font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Button { Task { await nova.handBack() } } label: {
+                Text("Hand back").font(.subheadline.bold())
+            }.buttonStyle(.borderedProminent).tint(.mint)
+        }
+    }
+    @ViewBuilder private var screen: some View {
+        if let data = nova.liveScreen, let image = UIImage(data: data) {
+            HStack(spacing: 8) {
+                RemoteScreen(image: image,
+                             onTap: { p in last = p; send(["action": "left_click", "coordinate": [p.x, p.y]]) },
+                             onDoubleTap: { p in last = p; send(["action": "double_click", "coordinate": [p.x, p.y]]) },
+                             onLongPress: { p in last = p; send(["action": "right_click", "coordinate": [p.x, p.y]]) })
+                    .aspectRatio(image.size.width / image.size.height, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.cyan.opacity(0.6), lineWidth: 1.5))
+                ScrollPad { direction in
+                    let p = last ?? CGPoint(x: image.size.width / 2, y: image.size.height / 2)
+                    send(["action": "scroll", "coordinate": [p.x, p.y], "scroll_direction": direction, "scroll_amount": 2], haptic: false)
+                }
+                .frame(width: 30)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ProgressView("Connecting to your Mac…").frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+    @ViewBuilder private var keyButtons: some View {
+        ForEach(keys, id: \.0) { key, label in
+            Button { send(["action": "key", "text": key]) } label: {
+                Text(label).font(.callout.weight(.medium)).frame(minWidth: 44).padding(.horizontal, 8).padding(.vertical, 8)
+                    .background(.white.opacity(0.08), in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+    private var typingRow: some View {
+        HStack {
+            TextField("Type on your Mac", text: $typing)
+                .textFieldStyle(.roundedBorder).focused($keyboard).submitLabel(.send)
+                .autocorrectionDisabled().textInputAutocapitalization(.never)
+                .onSubmit(sendText)
+            Button(action: sendText) { Image(systemName: "arrow.up.circle.fill").font(.title) }
+                .disabled(typing.isEmpty).accessibilityLabel("Type on the Mac")
+        }
+    }
+    private func sendText() {
+        guard !typing.isEmpty else { return }
+        send(["action": "type", "text": typing]); typing = ""
+    }
+    private func send(_ body: [String: Any], haptic: Bool = true) {
+        if haptic { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+        Task { await nova.input(body) }
+    }
+}
+
+/// A vertical pad: drag up or down on it to scroll the Mac where you last tapped.
+struct ScrollPad: View {
+    var onScroll: (String) -> Void
+    @State private var travelled: CGFloat = 0
+    var body: some View {
+        Capsule().fill(.white.opacity(0.07))
+            .overlay(VStack { Image(systemName: "chevron.up"); Spacer(); Image(systemName: "arrow.up.and.down").font(.caption); Spacer(); Image(systemName: "chevron.down") }
+                .font(.footnote).foregroundStyle(.secondary).padding(.vertical, 14))
+            .gesture(DragGesture(minimumDistance: 4)
+                .onChanged { drag in
+                    let step: CGFloat = 22
+                    while drag.translation.height - travelled <= -step { travelled -= step; onScroll("down") }
+                    while drag.translation.height - travelled >= step { travelled += step; onScroll("up") }
+                }
+                .onEnded { _ in travelled = 0 })
+            .accessibilityLabel("Scroll pad")
+    }
+}
+
+/// The live Mac screen in a zoomable scroll view. Reports points in screenshot pixels.
+struct RemoteScreen: UIViewRepresentable {
+    let image: UIImage
+    var onTap: (CGPoint) -> Void
+    var onDoubleTap: (CGPoint) -> Void
+    var onLongPress: (CGPoint) -> Void
+    func makeUIView(context: Context) -> RemoteScrollView { RemoteScrollView() }
+    func updateUIView(_ view: RemoteScrollView, context: Context) {
+        view.onTap = onTap; view.onDoubleTap = onDoubleTap; view.onLongPress = onLongPress
+        view.show(image)
+    }
+}
+
+final class RemoteScrollView: UIScrollView, UIScrollViewDelegate {
+    let imageView = UIImageView()
+    var onTap: ((CGPoint) -> Void)?
+    var onDoubleTap: ((CGPoint) -> Void)?
+    var onLongPress: ((CGPoint) -> Void)?
+    private var imageSize: CGSize = .zero
+    init() {
+        super.init(frame: .zero)
+        delegate = self
+        minimumZoomScale = 1; maximumZoomScale = 4
+        showsVerticalScrollIndicator = false; showsHorizontalScrollIndicator = false
+        backgroundColor = .black
+        imageView.isUserInteractionEnabled = true
+        addSubview(imageView)
+        let double = UITapGestureRecognizer(target: self, action: #selector(doubleTapped(_:))); double.numberOfTapsRequired = 2
+        let single = UITapGestureRecognizer(target: self, action: #selector(tapped(_:))); single.require(toFail: double)
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(held(_:))); hold.minimumPressDuration = 0.45
+        [double, single, hold].forEach(imageView.addGestureRecognizer)
+    }
+    required init?(coder: NSCoder) { nil }
+    func show(_ image: UIImage) {
+        imageView.image = image
+        let size = CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale)
+        if size != imageSize { imageSize = size; setNeedsLayout() }
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard imageSize.width > 0, bounds.width > 0 else { return }
+        let fit = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let base = CGSize(width: imageSize.width * fit, height: imageSize.height * fit)
+        if imageView.bounds.size != base {
+            zoomScale = 1
+            imageView.frame = CGRect(origin: .zero, size: base)
+            contentSize = base
+        }
+        center()
+    }
+    private func center() {
+        let dx = max(0, (bounds.width - contentSize.width) / 2), dy = max(0, (bounds.height - contentSize.height) / 2)
+        contentInset = UIEdgeInsets(top: dy, left: dx, bottom: dy, right: dx)
+    }
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
+    func scrollViewDidZoom(_ scrollView: UIScrollView) { center() }
+    private func pixel(_ gesture: UIGestureRecognizer) -> CGPoint {
+        let p = gesture.location(in: imageView)
+        ripple(at: p)
+        return CGPoint(x: (p.x / imageView.bounds.width * imageSize.width).rounded(), y: (p.y / imageView.bounds.height * imageSize.height).rounded())
+    }
+    private func ripple(at p: CGPoint) {
+        let ring = CAShapeLayer()
+        ring.path = UIBezierPath(ovalIn: CGRect(x: -14, y: -14, width: 28, height: 28)).cgPath
+        ring.position = p; ring.fillColor = UIColor.clear.cgColor
+        ring.strokeColor = UIColor.systemCyan.cgColor; ring.lineWidth = 2.5 / zoomScale
+        imageView.layer.addSublayer(ring)
+        let grow = CABasicAnimation(keyPath: "transform.scale"); grow.fromValue = 0.3 / zoomScale; grow.toValue = 1.4 / zoomScale
+        let fade = CABasicAnimation(keyPath: "opacity"); fade.fromValue = 1; fade.toValue = 0
+        let group = CAAnimationGroup(); group.animations = [grow, fade]; group.duration = 0.45
+        group.fillMode = .forwards; group.isRemovedOnCompletion = false
+        ring.add(group, forKey: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { ring.removeFromSuperlayer() }
+    }
+    @objc private func tapped(_ g: UITapGestureRecognizer) { onTap?(pixel(g)) }
+    @objc private func doubleTapped(_ g: UITapGestureRecognizer) { onDoubleTap?(pixel(g)) }
+    @objc private func held(_ g: UILongPressGestureRecognizer) { if g.state == .began { onLongPress?(pixel(g)) } }
+}
+
+/// Little lights circling Nova's face, one per background agent at work.
+struct WorkOrbit: View {
+    let count: Int
+    var body: some View {
+        TimelineView(.animation(paused: count == 0)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate, n = min(count, 4)
+            ZStack {
+                ForEach(0..<n, id: \.self) { i in
+                    let angle = t * 1.1 + Double(i) * 2 * .pi / Double(n)
+                    Circle().fill(Color.orange).frame(width: 11, height: 11)
+                        .shadow(color: .orange, radius: 8)
+                        .offset(x: cos(angle) * 175, y: sin(angle) * 175 * 0.32)
+                        .opacity(sin(angle) < 0 ? 0.45 : 1)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .animation(.easeInOut, value: count)
+    }
+}
+
+private let isoFormatter: ISO8601DateFormatter = { let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f }()
+private func relative(_ iso: String) -> String {
+    guard let date = isoFormatter.date(from: iso) else { return "" }
+    return date.formatted(.relative(presentation: .named))
+}
+
+/// Background agents at work, schedules and monitors, and everything they reported.
+struct WorkView: View {
+    @EnvironmentObject private var nova: NovaModel
+    var onShow: (() -> Void)?
+    var body: some View {
+        List {
+            if let work = nova.work {
+                Section("Working now") {
+                    if work.running.isEmpty { Text("Nothing running. Ask Nova to research something in the background.").foregroundStyle(.secondary) }
+                    ForEach(work.running) { run in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Image(systemName: run.usesComputer ? "desktopcomputer" : run.kind == "agent" ? "sparkle.magnifyingglass" : run.kind == "monitor" ? "eye" : "clock")
+                                    .foregroundStyle(.orange)
+                                Text(run.title).font(.headline)
+                                Spacer()
+                                ProgressView()
+                            }
+                            Text("Started \(relative(run.started))").font(.caption2).foregroundStyle(.secondary)
+                            if let latest = run.latest { Text(latest).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
+                        }
+                        .swipeActions { Button("Stop", role: .destructive) { Task { await nova.cancelWork(run.id) } } }
+                    }
+                }
+                Section("Scheduled") {
+                    if work.schedules.isEmpty { Text("Nothing scheduled. Try “every weekday at 8, brief me on the news” or “watch this page and tell me when it changes”.").foregroundStyle(.secondary) }
+                    ForEach(work.schedules) { schedule in
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: schedule.monitor ? "eye" : "calendar.badge.clock").foregroundStyle(.cyan).frame(width: 24)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(schedule.title).font(.headline)
+                                Text("\(schedule.repeat)\(schedule.usesComputer ? " · uses the Mac" : "") · next \(relative(schedule.next))").font(.caption).foregroundStyle(.secondary)
+                                if let last = schedule.lastResult { Text("Last: \(last)").font(.caption2).foregroundStyle(.secondary).lineLimit(2) }
+                            }
+                        }
+                        .swipeActions { Button("Delete", role: .destructive) { Task { await nova.cancelWork(schedule.id) } } }
+                    }
+                }
+                Section("Reports") {
+                    if work.reports.isEmpty { Text("Reports from agents and schedules appear here.").foregroundStyle(.secondary) }
+                    ForEach(work.reports) { report in ReportRow(report: report, onShow: onShow) }
+                }
+                if work.awake {
+                    Section { Label("Keeping your Mac awake while Nova has work to do", systemImage: "cup.and.saucer.fill").font(.footnote).foregroundStyle(.secondary) }
+                }
+            } else {
+                ProgressView()
+            }
+        }
+        .navigationTitle("Nova's work")
+        .navigationBarTitleDisplayMode(.inline)
+        .refreshable { await nova.refresh() }
+    }
+}
+
+struct ReportRow: View {
+    @EnvironmentObject private var nova: NovaModel
+    let report: NovaWork.Report
+    var onShow: (() -> Void)?
+    @State private var expanded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: report.ok ? (report.source == "agent" ? "sparkle.magnifyingglass" : report.source == "monitor" ? "eye" : "clock") : "exclamationmark.triangle.fill")
+                    .foregroundStyle(report.ok ? .cyan : .orange)
+                Text(report.title).font(.headline)
+                Spacer()
+                Text(relative(report.created_at)).font(.caption2).foregroundStyle(.secondary)
+            }
+            Text(report.message).font(.subheadline).lineLimit(expanded ? nil : 3).textSelection(.enabled)
+            if !report.visuals.isEmpty {
+                Button { nova.showReport(report); onShow?() } label: { Label("Show on Nova's face", systemImage: "chart.xyaxis.line") }
+                    .font(.caption.bold()).buttonStyle(.bordered).tint(.cyan)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { withAnimation { expanded.toggle() } }
+    }
+}
+
 /// Everything besides the face: conversation, typing, settings, jobs and stop controls.
 /// Opened by pressing and holding the face.
 struct NovaPanel: View {
@@ -875,7 +1253,7 @@ struct NovaPanel: View {
             Text(nova.computer?.owner == true ? "Nova can see your Mac's screen and use its mouse and keyboard without asking. Your words and screenshots go to Anthropic. Press Control-Option-S on the Mac to stop it instantly." : "Chat with Claude. This iPhone isn't the computer owner, so Nova can't use the Mac from here.")
                 .font(.caption).foregroundStyle(.secondary)
             if let ai = nova.ai {
-                Text(String(format:"Nova AI allowance: $%.2f used of $%.2f",ai.usedUSD,ai.allowanceUSD))
+                Text(String(format:"Claude spending so far: $%.2f. No limit; Nova stops when your credits run out.",ai.usedUSD))
                     .font(.caption).foregroundStyle(.secondary)
                 if !ai.configured { Text("Add your Claude API key on the Mac to enable Nova.").foregroundStyle(.orange) }
             }
@@ -908,6 +1286,9 @@ struct NovaPanel: View {
                     .disabled(nova.busy || nova.working || nova.stopped || nova.ai?.configured != true || message.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || message.count > 2000)
             }
             Toggle("Speak replies", isOn: $nova.voiceReplies).font(.subheadline)
+            if nova.computer?.owner == true {
+                NavigationLink { WorkView() } label: { Label("Agents, schedules and reports", systemImage: "sparkles") }
+            }
             Divider()
             Text("Safe tasks").font(.title2.bold())
             Text("These checks do not use AI or change your Mac.")

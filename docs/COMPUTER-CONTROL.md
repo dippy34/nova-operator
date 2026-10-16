@@ -13,17 +13,34 @@ Nova remembers the conversation for as long as the iPhone app stays open: each l
 
 The iPhone stays on Nova's face unless Nova uses the Mac or draws something. When an answer is easier to see, Claude calls the `show` tool and the face shrinks into a header while the screen becomes a graph of any functions (parsed and plotted on the iPhone), a bar, line or pie chart, a chalkboard that Nova writes one step at a time while saying each step (with simple chalk sketches), cards, or a table. Several visuals in one answer play in order and can be swiped between. Tap × to go back to the face. Visuals cost only the tokens Claude spends describing them; verified 2026-10-16 with a real board plus graph for x² − 5x + 6 ($0.027).
 
+## Taking over
+
+On the face, swipe up to see the Mac, then tap **Take over**. The iPhone turns sideways and you drive: tap to click, double-tap to double-click, press and hold to right-click, pinch to zoom, drag the side pad to scroll, and type or press keys at the side. Whatever Nova was doing stops. Tap **Hand back** when you're done; scheduled Mac work waits until then (or two minutes after your last tap).
+
+## Work: background agents, schedules and monitors
+
+Ask in plain words, for example "research the three best budget headphones in the background", "every weekday at 8, brief me on tech news", or "check this page every 30 minutes and tell me when it's back in stock".
+
+- **Background agents** run in parallel (up to four) while Nova or you use the Mac. They can search and read the web and make visuals, but cannot see or use the Mac. Orange lights circle Nova's face while they work.
+- **Schedules** run once, every N minutes, or daily (optionally on chosen weekdays, until a time). A schedule that needs the Mac takes turns with Nova; if you ask Nova for something, it goes first and the scheduled run retries within two minutes.
+- **Monitors** are schedules that stay quiet until something worth telling you happens, then report, and can end themselves when the thing you were waiting for has happened.
+- **Reports** appear as a banner on the face, are read aloud if the app is open, show as a Mac notification, and stay in the Work view (swipe left on the face, or tap the banner or the pill at the bottom). Visuals in a report can be shown on the face again. Swipe a schedule or running agent to delete or stop it, or ask Nova.
+- **Staying awake:** while plugged in, the Mac does not sleep so the iPhone can always reach Nova; with work pending it also stays awake on battery. The display can sleep, and Nova wakes it before scheduled Mac work. Closing the lid on battery still sleeps the Mac, and a locked screen stops scheduled Mac work.
+
+Work survives Core restarts (schedules are in SQLite); running agents are marked interrupted.
+
 ## How it works
 
 - **Brain:** Core runs Anthropic's computer-use toolset (`computer_toolset_20260801`) with Claude Sonnet 5.5 and adaptive thinking ([docs](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/computer-use-tool)). Claude sees the main display scaled to fit 1366 px on the long side and can zoom into regions at full resolution. It can click (left, right, middle, double, triple, with modifiers), drag, move, scroll, type, press key combinations and wait.
 - **Hands:** the Nova Operator menu-bar app posts system-wide mouse and keyboard events, so they go to whatever is on screen. Its cursor overlay is excluded from screenshots.
+- **Research:** Nova and its agents use Anthropic's server-side web search and web fetch (`web_search_20260318`, `web_fetch_20260318`). Searches cost $10 per 1,000 plus tokens.
 - **Voice:** the iPhone uses on-device Apple speech recognition (when the iPhone supports it) and the system text-to-speech voice. Neither costs anything.
 
 ## Limits that still apply
 
 - **Owner only:** only the iPhone designated with `npm run computer:owner` can run computer tasks. Other paired devices get text chat.
-- **One task at a time,** at most 40 Claude rounds per task.
-- **Spending:** each Claude round reserves $0.30 and is settled to the actual usage reported by Anthropic. A task stops at $1.50. All of Nova shares a $5 lifetime allowance. Errors that Anthropic rejects release the reservation, but timeouts keep it because billing is unknown.
+- **One task on the Mac at a time,** at most 40 Claude rounds per task. Up to four background agents in parallel.
+- **Spending:** no limit, by Matthew's choice (ADR 0010). Every Claude round is metered to the usage Anthropic reports, and the panel shows the running total. When the Claude credits run out, Nova says so. Schedules spend while nobody is watching; research with web search costs more than a plain question (a test with two agents and one scheduled check cost $0.51).
 - **Signed input:** every native request carries an HMAC-bound payload with a fresh nonce and five-second expiry, checked by Nova Operator before it acts. Only Core holds the key.
 - **On-screen instructions:** the system prompt tells Claude that text on screen comes from third parties, not Matthew. Anthropic also scans screenshots for prompt injection. Neither is a guarantee.
 

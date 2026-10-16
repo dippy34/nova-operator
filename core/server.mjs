@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { Store } from './db.mjs';
 import { createAI } from './ai.mjs';
 import { createComputer, permissions } from './computer.mjs';
+import { createWork } from './work.mjs';
 
 const execFileAsync = promisify(execFile);
 const defaultDb = resolve(process.env.NOVA_DB ?? './.nova-data/nova.sqlite');
@@ -31,10 +32,11 @@ function cleanMessage(message) {
   return message.trim();
 }
 
-export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORKSPACE, executeOverride, aiOptions, computerOptions } = {}) {
+export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORKSPACE, executeOverride, aiOptions, computerOptions, workOptions } = {}) {
   const store = new Store(dbFile);
   const ai = createAI(store, aiOptions);
   const computer=createComputer(store,computerOptions);
+  const work=createWork(store,computer,{call:computerOptions?.call,...workOptions});
   let server;
   let closing = false, closePromise;
   const active = new Map();
@@ -56,8 +58,9 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
     const controller = new AbortController(); active.set(id, controller);
     store.updateJob(id, 'running');
     try {
+      if (type === 'computer.task') await work.yieldComputer();
       const result = type === 'computer.task'
-        ? await computer.task(deviceId,id,payload.message,controller.signal,payload.conversation)
+        ? await computer.task(deviceId,id,payload.message,controller.signal,payload.conversation,{...work.tools(deviceId),prefix:work.context(deviceId)})
         : type === 'ai.chat'
         ? await ai.chat(id, deviceId, payload.message, controller.signal)
         : await execute(type, payload, controller.signal);
@@ -96,6 +99,23 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
         if(task)active.get(task)?.abort();
         return json(res,200,{ended:true});
       }
+      if(req.method==='POST'&&url.pathname==='/v1/computer/input'){
+        const body=await readJson(req);
+        try{
+          if(!computer.status(device.id).owner)throw new Error('Owner iPhone required');
+          // Taking over ends whatever Nova is doing on the Mac.
+          if(computer.busy()){await work.yieldComputer();const busy=computer.busy();if(busy){store.event(busy.id,'takeover','Matthew took over the Mac');active.get(busy.id)?.abort();}}
+          return json(res,200,await computer.input(device.id,body));
+        }catch(error){return json(res,409,{error:error.message});}
+      }
+      if(req.method==='POST'&&url.pathname==='/v1/computer/release'){
+        try{computer.release(device.id);return json(res,200,{released:true});}catch(error){return json(res,403,{error:error.message});}
+      }
+      if(req.method==='GET'&&url.pathname==='/v1/work')return json(res,200,work.status(device.id));
+      if(req.method==='POST'&&url.pathname==='/v1/work/cancel'){
+        const body=await readJson(req);
+        try{return json(res,200,{message:work.cancel(device.id,String(body?.id??''))});}catch(error){return json(res,404,{error:error.message});}
+      }
       if(req.method==='GET'&&url.pathname==='/v1/computer/live'){
         try{const jpeg=await computer.live(device.id);res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(jpeg);}
         catch(error){return json(res,409,{error:error.message});}
@@ -123,25 +143,27 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
         return job ? json(res,200,{...job,events:store.events(job.id)}) : json(res,404,{error:'Job not found'});
       }
       if (req.method === 'POST' && url.pathname === '/v1/stop') {
-        store.stop();computer.stop(); for (const controller of active.values()) controller.abort();
+        store.stop();computer.stop();work.stop(); for (const controller of active.values()) controller.abort();
         return json(res,200,{stopped:true});
       }
       return json(res,404,{error:'Not found'});
     } catch (error) { return json(res,error.status || 500,{error:error.status ? error.message : 'Internal error'}); }
   };
   return {
-    store,
+    store, work,
     async listen(port=8787, host='127.0.0.1') {
       if (host !== '127.0.0.1' && host !== '::1') throw new Error('Nova Core must listen on loopback; use private Tailscale Serve');
       server=http.createServer((req,res)=>{void handler(req,res);});
       await new Promise((ok,fail)=>server.once('error',fail).listen(port,host,ok));
       // A failed second server must never interrupt jobs in the live instance.
       store.reconcileStartup();
+      work.start();
       return server.address().port;
     },
     close() {
       if (!closePromise) closePromise = (async () => {
         closing = true;
+        await work.close();
         computer.stop();
         for (const c of active.values()) c.abort();
         if (server?.listening) await new Promise(ok => server.close(ok));

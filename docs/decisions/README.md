@@ -11,7 +11,9 @@ One file per significant architectural choice. Statuses: `Proposed`, `Accepted`,
 | [0005](0005-low-trust-desk-companion.md) | Desk companion is a low-trust device that can never approve | Proposed |
 | [0006](0006-pinned-target-taint-policy.md) | Pinned-target taint policy: tainted contexts need approval only for unpinned targets | Proposed |
 | [0007](0007-text-only-claude-prototype.md) | Bounded text-only Claude conversation before operator capabilities | Proposed |
-| [0008](0008-reviewed-app-control.md) | Reviewed app-scoped computer sessions with a contained Brain | Proposed |
+| [0008](0008-reviewed-app-control.md) | Reviewed app-scoped computer sessions with a contained Brain | Superseded by 0009 |
+| [0009](0009-autonomous-computer-control.md) | Autonomous whole-Mac control with Claude computer use | Accepted |
+| [0010](0010-work-agents-and-takeover.md) | Background agents, schedules, unlimited spending and iPhone take-over | Proposed |
 
 ## Template
 

@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { configuredKey, MODEL, pricedUsage } from './claude-worker.mjs';
 import {workerLaunch} from './brain-sandbox.mjs';
 
-export const AI_BUDGET_MICROS = 5_000_000; // $5 lifetime allowance, not a daily reset.
+// Matthew removed the allowance on 2026-10-16: Nova spends until the Claude credits run out.
+export const AI_BUDGET_MICROS = Number.POSITIVE_INFINITY;
 export const RESERVATION_MICROS = 10_000; // $0.01 retained on unknown outcomes.
 const errors = {
   KEY: 'Add a Claude API key to the private .env.local file on your Mac (permissions 600).',
@@ -81,7 +82,7 @@ export function callWorker(messages, signal, {fetchImpl=fetch,keyProvider=config
 export function createAI(store, { request = callWorker, configured = () => Boolean(configuredKey()) } = {}) {
   let busy = false;
   return {
-    status() { return { configured: configured(), model: MODEL, usedUSD: store.aiSpent()/1e6, allowanceUSD: AI_BUDGET_MICROS/1e6, busy }; },
+    status() { return { configured: configured(), model: MODEL, usedUSD: store.aiSpent()/1e6, allowanceUSD: null, busy }; },
     async chat(id, deviceId, message, signal) {
       if (!configured()) throw new Error(errors.KEY);
       if (busy) throw new Error('Nova is already answering a message. Please wait.');
