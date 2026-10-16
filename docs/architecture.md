@@ -19,7 +19,7 @@ This follows the privileged-planner, quarantined-reader pattern from prompt-inje
 
 ## 2. Processes on the Mac
 
-All run as LaunchAgents in the logged-in user session. A LaunchDaemon can't post events to the GUI.
+User-session GUI helpers run as LaunchAgents. Background services may use other launchd arrangements as appropriate, but a LaunchDaemon cannot directly operate the user's GUI. Privilege and OS containment boundaries matter more than the implementation language.
 
 1. **`nova-core`** (TypeScript/Node). Remote API on the tailnet, signature verification, approval manager, policy engine (Cedar via WASM, or a hand-rolled deterministic evaluator), scheduler, SQLite journal in WAL mode, token minter, APNs sender, budgets, kill switch. Small and boring on purpose.
 2. **`nova-brain`** (TypeScript, separate process). Planner loop, model router, context and memory. No executor credentials, no TCC grants; talks only to Core.
@@ -33,7 +33,7 @@ All run as LaunchAgents in the logged-in user session. A LaunchDaemon can't post
 
 **Code signing:** TCC grants are tied to the code signature. Sign every build with a stable Developer ID from day one, or rebuilds silently reset grants. Distribute as a notarized Developer ID app; App Store sandboxing forbids controlling other apps.
 
-**v1 simplification:** Core and Brain may share one process with a strict module boundary, and split before Phase 5 when GUI and vision autonomy arrives. Executor token verification exists from day one either way.
+**Trust boundary:** Keep `nova-brain` outside the authorization process from Phase 1 if practical. A module boundary in one Node process is **not** a security boundary: model-driven tool orchestration could still call privileged APIs if compromised. Separate processes help but require OS-level credentials and IPC permissions isolation, not just separation by name. Executor token verification exists from day one. See the trust-boundary ADR.
 
 ## 3. Contracts between planner, policy, scheduler, and adapters
 
@@ -72,10 +72,10 @@ A `deny` closes that effect for the rest of the mission, whichever tool tries to
 
 ### Taint tracking
 
-- A Brain context that reads untrusted content (web, email, documents, agent output) is marked tainted.
-- Tainted contexts can't trigger `comm.send`, `publish`, `purchase`, or `auth.change` without approval, even if the grant allows it.
-- Coarse on purpose. Fine-grained taint tracking through an LLM isn't reliable.
-- The effect policy is pinned when the mission starts, so text read mid-task can't widen it.
+- External pages, messages, repository files and agent output are **untrusted observations**, never instructions that can expand a mission grant.
+- Do not automatically cancel every preapproved consequential action merely because a workflow read untrusted data: that would defeat unattended autonomy. Instead, bind permissions to exact targets, effect classes, destinations, rates and budgets; require independent postcondition and provenance checks before permitted actions.
+- When untrusted content attempts to modify instructions, recipients, destinations, command scope or authorization, quarantine the proposal and request a fresh, narrowly scoped approval. Unknown-effect actions fail closed.
+- This is a proposed policy, **not a solved prompt-injection defense**. Include adversarial tests before allowing `comm.send`, `publish` or destructive actions unattended. The effect policy is pinned at mission start.
 
 ## 4. Scheduler
 
@@ -103,7 +103,7 @@ A journaled **dynamic task graph**, not a static DAG and not a general workflow 
 
 ## 6. Remote, device, and model layer
 
-- **Transport.** v1: a Tailscale tailnet, with Core serving HTTPS and WebSocket only on the tailnet interface. v2: an optional relay (for example a Cloudflare Worker with a Durable Object) carrying end-to-end-encrypted envelopes, to queue commands while the Mac is offline. The relay can relay but never forge.
+- **Transport.** v1: a Tailscale tailnet, with Core serving HTTPS and WebSocket only on the tailnet interface. The native iPhone app needs its tailnet connection active; when Core is offline, it should show disconnected and preserve unsent drafts, not promise background delivery from a suspended iOS process. v2: an optional relay (for example a Cloudflare Worker with a Durable Object) carrying end-to-end-encrypted envelopes, to queue commands while the Mac is offline. The relay can relay but never forge.
 - **Authentication.** Every request is signed with a per-device P-256 key in the Secure Enclave. Approval and grant keys require Face ID (`.biometryCurrentSet`). Requests carry a nonce, a timestamp, and the target action hash. Core keeps allowlisted public keys and per-device roles. App Attest on the iPhone app.
 - **Push.** Core sends APNs itself, with minimal payloads ("approval needed"). The app fetches details over the tailnet. Live Activities show long-running mission status.
 - **Desk companion.** Foreground app with Guided Access and auto-lock off. On-device speech (`SpeechAnalyzer` on iOS 26, or `SFSpeechRecognizer`). Its own wake-word detector, since iOS has no API for custom always-on wake words. Observer role key: Core rejects every approval from it.
