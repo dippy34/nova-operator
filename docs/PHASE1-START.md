@@ -4,7 +4,7 @@ This is an **implementation**, not an architectural mockup. It has a native iOS 
 
 ## Implemented / not implemented
 
-**Claude chat addition:** The native client and Core now include bounded text-only Claude conversation. See [Claude setup and cost controls](CLAUDE-SETUP.md). The signed update built and installed on Matthew's iPhone, and all 15 backend tests passed. A real authenticated job through running Core returned a Haiku 5.5 reply using 156 input / 18 output tokens (estimated $0.000025). Its temporary setup credential was revoked. Remote launch of the updated app was blocked because the iPhone was locked; the new phone chat flow still needs a user check. This does not enable AI planning or computer control.
+**Claude chat addition:** The native client and Core now include bounded text-only Claude conversation. See [Claude setup and cost controls](CLAUDE-SETUP.md). The signed update built and installed on Matthew's iPhone, and all 15 backend tests passed. A real authenticated job through running Core returned a Haiku 5.5 reply using 156 input / 18 output tokens (estimated $0.000025). Its temporary setup credential was revoked. Matthew then confirmed native phone chat works; Core independently recorded the paired iPhone's successful Claude request (134 input / 25 output tokens, estimated $0.000026). This verifies the native phone-to-Claude round trip. It does not enable AI planning or computer control.
 
 | Today (v0.1) | Future phases |
 | --- | --- |

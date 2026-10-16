@@ -35,6 +35,6 @@ The worker process has no tool interface but shares the macOS user account. It i
 ### Verified on Matthew's Mac, 2026-10-16
 
 - All 15 backend tests passed, including the new fake-provider safety/accounting tests.
-- Xcode built and signed the updated native app; installation on the iPhone 13 succeeded. Remote launch failed because the device was locked. The new phone chat UI still requires an on-device check.
+- Xcode built and signed the updated native app; installation on the iPhone 13 succeeded. Matthew then unlocked/opened Nova and confirmed chat works. Core independently recorded a successful `ai.chat` from the paired `Nova iPhone`: 134 input / 25 output tokens, estimated $0.000026. The native iPhone → private Core → Claude → native reply path is verified.
 - Core was reinstalled as the login service. A real, authenticated `ai.chat` job went through Core, the separate worker and Anthropic, returning: “Yes, Nova's Claude connection is working.” Usage: 156 input tokens, 18 output tokens, estimated $0.000025 at the documented rates. No retries. The temporary setup device credential was revoked afterward.
 - The private key was detected without printing it. No API key or signing credential is tracked in Git.
