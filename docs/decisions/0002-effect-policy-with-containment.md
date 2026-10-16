@@ -1,0 +1,39 @@
+# 0002. Effect-based execution-time policy, backed by OS containment
+
+Status: Proposed
+Date: 2026-10-16
+Proposed by: Claude
+
+## Context
+
+Matthew's revision requires every concrete action to pass deterministic, effect-based authorization, and agents must not bypass it through alternate tools. Policy keyed on tools fails: deny Mail.app and an agent tries Gmail in Chrome, `osascript`, or curl.
+
+But effect-based policy only works when an action's effect can be determined before it runs. Two big classes can't be:
+
+- A raw CGEvent click at coordinates has no knowable effect.
+- `bash -c "$(cat x)"` can't be classified by parsing.
+
+## Decision
+
+1. Policy reasons about **effects** from a small taxonomy (see [`architecture.md`](../architecture.md)), derived by adapter code, never claimed by the model.
+2. Policy is evaluated at **execution time** on each concrete `ActionDescriptor`, not on plans.
+3. Where effects can't be classified, **OS containment** enforces the boundary instead:
+   - Shell commands and coding agents run under Seatbelt profiles with write scope limited to the task.
+   - All sandboxed network traffic goes through an egress proxy with a per-mission domain allowlist.
+   - GUI clicks are hit-tested with AX. When AX can't identify the target, the action is `gui.opaque(app)`, allowed only under an explicit per-app `full-control` grant.
+4. A `deny` closes the effect for the rest of the mission, so the planner stops searching for alternate routes.
+
+## Alternatives considered
+
+- **Tool-based allowlists.** Rejected: trivially bypassed by alternate tools.
+- **Command parsing for shell.** Rejected: undecidable in general, easy to obfuscate.
+- **Model-based effect classification.** Allowed only to *escalate* risk, never to permit.
+
+## Consequences
+
+- Every adapter operation needs an effect descriptor and, for side effects, a reconcile probe. This is the largest engineering workload in the project.
+- `full-control` grants are coarse. Matthew must consciously grant them per app.
+
+## Objections
+
+None yet.
