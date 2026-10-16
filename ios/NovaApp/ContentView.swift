@@ -2,19 +2,28 @@ import SwiftUI
 import UIKit
 
 struct NovaFace: View {
+    var listening = false
+    var working = false
+    var speaking = false
+    @State private var pulse = false
+    private var color: Color { listening ? .pink : working ? .orange : .cyan }
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 32).fill(Color(red:0.075,green:0.105,blue:0.16))
             VStack(spacing: 14) {
                 HStack(spacing: 38) {
-                    Capsule().fill(.cyan).frame(width: 24,height: 42)
-                    Capsule().fill(.cyan).frame(width: 24,height: 42)
+                    Capsule().fill(color).frame(width: 24,height: listening ? 48 : 42)
+                    Capsule().fill(color).frame(width: 24,height: listening ? 48 : 42)
                 }
-                Image(systemName:"mouth").font(.largeTitle).foregroundStyle(.cyan)
+                Image(systemName: speaking ? "waveform" : "mouth").font(.largeTitle).foregroundStyle(color)
+                    .symbolEffect(.variableColor.iterative, isActive: speaking)
             }
+            .scaleEffect(pulse && (working || listening) ? 1.04 : 1)
         }
         .frame(height: 182)
-        .accessibilityLabel("Nova's animated face placeholder")
+        .animation(.easeInOut(duration: 0.25), value: color)
+        .onAppear { withAnimation(.easeInOut(duration: 0.8).repeatForever()) { pulse = true } }
+        .accessibilityLabel(listening ? "Nova is listening" : working ? "Nova is working" : speaking ? "Nova is speaking" : "Nova")
     }
 }
 
@@ -22,13 +31,14 @@ struct ContentView: View {
     @EnvironmentObject private var nova: NovaModel
     @State private var message = ""
     @State private var showStopConfirmation = false
-    @State private var selectedApp = "Calculator"
-    @State private var showComputerConfirmation = false
+    @ObservedObject private var listenerState: Listener
+    @ObservedObject private var speakerState: Speaker
+    init(nova: NovaModel) { listenerState = nova.listener; speakerState = nova.speaker }
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment:.leading, spacing:20) {
-                    NovaFace()
+                    NovaFace(listening: listenerState.listening, working: nova.working, speaking: speakerState.speaking)
                     HStack(spacing:8) {
                         Circle().fill(nova.connection == "Mac connected" ? .green : .orange).frame(width:9,height:9)
                         Text(nova.paired ? nova.connection : "Pair your iPhone")
@@ -48,14 +58,11 @@ struct ContentView: View {
             .confirmationDialog("Stop all Nova jobs?",isPresented:$showStopConfirmation,titleVisibility:.visible) {
                 Button("Emergency Stop",role:.destructive) {Task {await nova.emergencyStop()} }
             } message: {Text("This stops work on the Mac until you run npm run resume locally.")}
-            .confirmationDialog("Allow a 20-minute computer session in \(selectedApp)?",isPresented:$showComputerConfirmation,titleVisibility:.visible) {
-                Button("Allow \(selectedApp) session") {Task {await nova.startComputer(selectedApp)}}
-            } message: {Text("The selected app's window will be sent to Anthropic when you request computer tasks. Each click, scroll, key and text entry requires your review and device authentication. Inputs may change files or send information inside that app. Handle passwords, purchases, security changes and irreversible actions yourself.")}
         }
         .task {
             while !Task.isCancelled {
                 if nova.paired {await nova.refresh()}
-                try? await Task.sleep(for: .seconds(4))
+                try? await Task.sleep(for: .seconds(nova.working ? 1 : 4))
             }
         }
     }
@@ -79,55 +86,50 @@ struct ContentView: View {
 
     private var connected: some View {
         VStack(alignment:.leading,spacing:16) {
-            if let computer = nova.computer, computer.owner {
-                Text("Computer control").font(.title2.bold())
-                if computer.active {
-                    Text("Session: \(computer.app ?? "Mac app")").foregroundStyle(.cyan)
-                    Text("Send a task below. Review each proposed input before it runs. Switching to another Mac app pauses control.").font(.caption).foregroundStyle(.secondary)
-                    Button("End computer session") {Task {await nova.endComputer()}}.buttonStyle(.bordered)
-                } else {
-                    Picker("App",selection:$selectedApp) {ForEach(computer.apps,id:\.self) {Text($0).tag($0)}}
-                    Button("Start 20-minute session") {showComputerConfirmation = true}.buttonStyle(.borderedProminent).disabled(nova.busy || nova.stopped)
-                }
-                Divider()
-            }
             Text("Talk to Nova").font(.title2.bold())
-            Text(nova.computer?.active == true ? "Computer mode: your selected window and task go to Claude. Proposed input waits for your approval." : "Chat with Claude. Messages and a few recent replies are sent to Anthropic. Start a computer session to request screen-based actions.")
+            Text(nova.computer?.owner == true ? "Nova can see your Mac's screen and use its mouse and keyboard without asking. Your words and screenshots go to Anthropic. Press Control-Option-S on the Mac to stop it instantly." : "Chat with Claude. This iPhone isn't the computer owner, so Nova can't use the Mac from here.")
                 .font(.caption).foregroundStyle(.secondary)
             if let ai = nova.ai {
-                Text(String(format:"Nova AI allowance: $%.4f used of $%.2f",ai.usedUSD,ai.allowanceUSD))
+                Text(String(format:"Nova AI allowance: $%.2f used of $%.2f",ai.usedUSD,ai.allowanceUSD))
                     .font(.caption).foregroundStyle(.secondary)
-                if !ai.configured { Text("Add your Claude API key on the Mac to enable chat.").foregroundStyle(.orange) }
+                if !ai.configured { Text("Add your Claude API key on the Mac to enable Nova.").foregroundStyle(.orange) }
             }
             if let chat = nova.chat {
                 if let question = chat.payload["message"] { Text(question.description).font(.subheadline).foregroundStyle(.cyan) }
+                ForEach(chat.events.filter { ["narration","action"].contains($0.kind) }.suffix(8)) { event in
+                    Label(event.description, systemImage: event.kind == "narration" ? "text.bubble" : "cursorarrow.click")
+                        .font(event.kind == "narration" ? .subheadline : .caption).foregroundStyle(event.kind == "narration" ? .primary : .secondary)
+                }
                 if let reply = chat.result?["message"] {
-                    Text(reply.description).textSelection(.enabled)
-                    if let cost = chat.result?["estimatedUSD"] {
-                        Text("Estimated cost: $\(cost.description)").font(.caption2).foregroundStyle(.secondary)
+                    Text(reply.description).font(.body.weight(.medium)).textSelection(.enabled)
+                    if let cost = chat.result?["estimatedUSD"], case .number(let usd) = cost {
+                        Text(String(format:"Cost: $%.3f",usd)).font(.caption2).foregroundStyle(.secondary)
                     }
-                    if chat.result?["truncated"]?.description == "true" { Text("Reply shortened to stay within the limit.").font(.caption).foregroundStyle(.secondary) }
                 } else if let error = chat.error { Text(error).foregroundStyle(.orange) }
-                else if ["queued","running"].contains(chat.status) { ProgressView("Nova is thinking…") }
+                else if nova.working { ProgressView(chat.type == "computer.task" ? "Nova is working…" : "Nova is thinking…") }
                 else { Text("Message \(chat.status)").foregroundStyle(.secondary) }
                 if chat.type == "computer.task", let data = nova.computerScreen, let image = UIImage(data:data) {
                     Image(uiImage:image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius:8))
                 }
-                if chat.status == "awaiting_approval" {
-                    Text(chat.result?["summary"]?.description ?? "Review proposed action").font(.headline).textSelection(.enabled)
-                    HStack {
-                        Button("Approve action") {Task {await nova.reviewComputer(chat.id,approvalID:chat.result?["approvalID"]?.description,approve:true)}}.buttonStyle(.borderedProminent)
-                        Button("Reject",role:.destructive) {Task {await nova.reviewComputer(chat.id,approvalID:chat.result?["approvalID"]?.description,approve:false)}}.buttonStyle(.bordered)
-                    }.disabled(nova.busy || nova.stopped || nova.computer?.active != true)
+                if nova.working && chat.type == "computer.task" {
+                    Button(role:.destructive) {Task {await nova.stopTask()}} label:{Label("Stop this task",systemImage:"stop.fill")}.buttonStyle(.bordered)
                 }
+            }
+            if listenerState.listening {
+                Text(listenerState.transcript.isEmpty ? "Listening…" : listenerState.transcript).foregroundStyle(.pink)
             }
             HStack {
                 TextField("Message Nova",text:$message,axis:.vertical).lineLimit(1...5).textFieldStyle(.roundedBorder)
-                Button { Task { if await nova.submit(nova.computer?.active == true ? "computer.task" : "ai.chat",message:message) { message = "" } } } label: {
-                    Image(systemName:"arrow.up.circle.fill").font(.title2)
+                Button { Task { await nova.toggleListening() } } label: {
+                    Image(systemName: listenerState.listening ? "stop.circle.fill" : "mic.circle.fill").font(.title).foregroundStyle(listenerState.listening ? .pink : .cyan)
+                }.accessibilityLabel(listenerState.listening ? "Stop listening and send" : "Talk to Nova")
+                    .disabled(nova.stopped || nova.ai?.configured != true || (nova.working && !listenerState.listening))
+                Button { Task { if await nova.send(message) { message = "" } } } label: {
+                    Image(systemName:"arrow.up.circle.fill").font(.title)
                 }.accessibilityLabel("Send message")
-                    .disabled(nova.busy || nova.stopped || nova.ai?.configured != true || nova.ai?.busy == true || message.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || message.count > 2000)
+                    .disabled(nova.busy || nova.working || nova.stopped || nova.ai?.configured != true || message.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || message.count > 2000)
             }
+            Toggle("Speak replies", isOn: $nova.voiceReplies).font(.subheadline)
             Divider()
             Text("Safe tasks").font(.title2.bold())
             Text("These checks do not use AI or change your Mac.")

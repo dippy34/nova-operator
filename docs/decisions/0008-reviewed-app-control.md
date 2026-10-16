@@ -1,6 +1,6 @@
 # 0008. Human-reviewed app control with a contained Brain
 
-Status: Proposed
+Status: Superseded by [0009](0009-autonomous-computer-control.md)
 Date: 2026-10-16
 Proposed by: Codex
 

@@ -34,7 +34,7 @@ function cleanMessage(message) {
 export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORKSPACE, executeOverride, aiOptions, computerOptions } = {}) {
   const store = new Store(dbFile);
   const ai = createAI(store, aiOptions);
-  const computer=createComputer(store,ai,computerOptions);
+  const computer=createComputer(store,computerOptions);
   let server;
   let closing = false, closePromise;
   const active = new Map();
@@ -51,25 +51,25 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
     }
     throw new Error('Unknown safe task type');
   });
-  const runJob = async (id, type, payload, deviceId, approvalID=null) => {
+  const runJob = async (id, type, payload, deviceId) => {
     if (closing || store.stopped()) { store.updateJob(id, 'cancelled'); return; }
     const controller = new AbortController(); active.set(id, controller);
     store.updateJob(id, 'running');
     try {
       const result = type === 'computer.task'
-        ? approvalID ? await computer.approve(deviceId,id,controller.signal,approvalID) : await computer.plan(deviceId,id,payload.message,controller.signal)
+        ? await computer.task(deviceId,id,payload.message,controller.signal)
         : type === 'ai.chat'
         ? await ai.chat(id, deviceId, payload.message, controller.signal)
         : await execute(type, payload, controller.signal);
       if (controller.signal.aborted || store.stopped()) store.updateJob(id, 'cancelled');
-      else store.updateJob(id, result.needsApproval ? 'awaiting_approval' : 'succeeded', result);
+      else store.updateJob(id, 'succeeded', result);
     } catch (error) { store.updateJob(id, controller.signal.aborted ? 'cancelled' : 'failed', null, String(error.message).slice(0,250)); }
     finally { active.delete(id); }
   };
-  const schedule=(id,type,payload,deviceId,approvalID=null)=>{
+  const schedule=(id,type,payload,deviceId)=>{
     if(active.has(id)||scheduled.has(id))throw Object.assign(new Error('Job is already running'),{status:409});
     scheduled.add(id);
-    const task=new Promise(ok=>setImmediate(ok)).then(()=>{scheduled.delete(id);return runJob(id,type,payload,deviceId,approvalID);});
+    const task=new Promise(ok=>setImmediate(ok)).then(()=>{scheduled.delete(id);return runJob(id,type,payload,deviceId);});
     pending.add(task);void task.finally(()=>pending.delete(task));
   };
   const handler = async (req, res) => {
@@ -91,41 +91,15 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
         if(!computer.status(device.id).owner)return json(res,403,{error:'Owner iPhone required'});
         return json(res,200,await computer.permissions());
       }
-      if(req.method==='POST'&&url.pathname==='/v1/computer/session'){
-        const body=await readJson(req);
-        if(active.has('computer-session'))return json(res,409,{error:'A session request is already running'});
-        const controller=new AbortController();active.set('computer-session',controller);
-        try{return json(res,200,await computer.start(device.id,body?.app,controller.signal));}
-        catch(error){return json(res,409,{error:error.message});}
-        finally{active.delete('computer-session');}
-      }
       if(req.method==='POST'&&url.pathname==='/v1/computer/end'){
-        try{computer.end(device.id);for(const c of active.values())c.abort();return json(res,200,{ended:true});}
-        catch(error){return json(res,403,{error:error.message});}
+        const task=computer.status(device.id).task;
+        if(task)active.get(task)?.abort();
+        return json(res,200,{ended:true});
       }
-      const controlMatch=/^\/v1\/computer\/(approve|reject|screen)\/([a-zA-Z0-9_-]{16})$/.exec(url.pathname);
-      if(controlMatch){
-        const [,operation,id]=controlMatch;
-        const job=store.getJob(id,device.id);
-        if(!job||job.type!=='computer.task')return json(res,404,{error:'Computer task not found'});
-        if(operation==='screen'&&req.method==='GET'){
-          try{const png=computer.screen(device.id,id);res.writeHead(200,{'Content-Type':'image/png','Cache-Control':'no-store'});return res.end(png);}
-          catch(error){return json(res,403,{error:error.message});}
-        }
-        if(req.method==='POST'&&['approve','reject'].includes(operation)){
-          if(store.stopped())return json(res,423,{error:'Nova is stopped'});
-          if(job.status!=='awaiting_approval')return json(res,409,{error:'Action is not awaiting approval'});
-          const body=await readJson(req);
-          if(store.getJob(id,device.id)?.status!=='awaiting_approval')return json(res,409,{error:'Action is no longer awaiting approval'});
-          try{computer.checkApproval(device.id,id,body?.approvalID);}catch(error){return json(res,409,{error:error.message});}
-          if(operation==='reject'){
-            try{computer.reject(device.id,id,body.approvalID);return json(res,200,{status:'cancelled'});}
-            catch(error){return json(res,409,{error:error.message});}
-          }
-          // Change state synchronously before yielding: duplicate approvals cannot queue twice.
-          store.updateJob(id,'queued');schedule(id,job.type,job.payload,device.id,body.approvalID);
-          return json(res,202,{id,status:'queued'});
-        }
+      const screenMatch=/^\/v1\/computer\/screen\/([a-zA-Z0-9_-]{16})$/.exec(url.pathname);
+      if(screenMatch&&req.method==='GET'){
+        try{const jpeg=computer.screen(device.id,screenMatch[1]);res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(jpeg);}
+        catch(error){return json(res,404,{error:error.message});}
       }
       if (req.method === 'GET' && url.pathname === '/v1/jobs') return json(res,200,{jobs:store.jobs(device.id)});
       if (req.method === 'POST' && url.pathname === '/v1/jobs') {
@@ -177,7 +151,7 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const app = makeNova();
   const port = await app.listen(Number(process.env.NOVA_PORT ?? 8787));
-  console.log(`Nova Core v0.1 listening on http://127.0.0.1:${port} (chat and reviewed app-scoped computer control)`);
+  console.log(`Nova Core v0.1 listening on http://127.0.0.1:${port} (chat and autonomous computer control)`);
   console.log('Nova Operator service-context permissions: '+JSON.stringify(await permissions()));
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal,()=>{void app.close().then(()=>process.exit(0));});

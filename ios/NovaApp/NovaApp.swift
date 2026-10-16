@@ -5,7 +5,7 @@ struct NovaApp: App {
     @StateObject private var nova = NovaModel()
     var body: some Scene {
         WindowGroup {
-            ContentView().environmentObject(nova)
+            ContentView(nova: nova).environmentObject(nova)
                 .preferredColorScheme(.dark)
         }
     }

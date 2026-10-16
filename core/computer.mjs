@@ -4,27 +4,18 @@ import {randomBytes,createHmac} from 'node:crypto';
 import {homedir} from 'node:os';
 import {resolve,dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {runAgent,agentCost} from './agent.mjs';
+import {AI_BUDGET_MICROS} from './ai.mjs';
 
-export const APPS=['Chrome','Safari','TextEdit','Calculator','Notes','Finder'];
-export const KEYS=['return','tab','escape','backspace','up','down','left','right','cmd+a','cmd+l','cmd+n','cmd+s'];
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 export const binary=join(root,'.nova-data','Nova Operator.app','Contents','MacOS','NovaOperator');
 const keyFile=join(root,'.nova-data','operator.key');
 export const socketPath=join(homedir(),'Library','Application Support','Nova Operator','operator.sock');
+export const TURN_RESERVATION_MICROS=300_000; // Upper bound for one Sonnet turn, settled to actual usage.
+export const TASK_CAP_MICROS=1_500_000;
 const NOT_RUNNING='Nova Operator is not running on the Mac. Run npm run operator:install, or open Nova Operator.app.';
 const fail=text=>{throw new Error(text);};
 
-export function validateAction(input) {
-  if(!input || typeof input!=='object' || Array.isArray(input))fail('Invalid computer action');
-  const allowed={click:['kind','x','y'],type:['kind','text'],key:['kind','key'],scroll:['kind','x','y','direction'],done:['kind','message']};
-  if(!allowed[input.kind] || Object.keys(input).some(k=>!allowed[input.kind].includes(k)))fail('Computer action outside supported scope');
-  if(['click','scroll'].includes(input.kind) && ![input.x,input.y].every(n=>typeof n==='number' && Number.isFinite(n) && n>=2 && n<=998))fail('Coordinates must stay inside the selected window');
-  if(input.kind==='type' && (typeof input.text!=='string'||!input.text.length||input.text.length>500||/[\x00-\x1f\x7f]/.test(input.text)))fail('Only printable text of 1–500 characters is allowed');
-  if(input.kind==='key'&&!KEYS.includes(input.key))fail('Key combination outside allowed scope');
-  if(input.kind==='scroll'&&!['up','down'].includes(input.direction))fail('Invalid scroll direction');
-  if(input.kind==='done'&&(typeof input.message!=='string'||input.message.length>1000))fail('Invalid completion message');
-  return structuredClone(input);
-}
 export function signedEnvelope(request, key, now=Date.now()) {
   const payload=Buffer.from(JSON.stringify({...request,nonce:randomBytes(16).toString('hex'),expires:now/1000+5}));
   return {payload:payload.toString('base64'),mac:createHmac('sha256',key).update(payload).digest('base64')};
@@ -34,7 +25,7 @@ export function operatorRequest(message,{signal,timeout=15000}={}) {
     const chunks=[];let size=0;
     const socket=connect(socketPath);
     const timer=setTimeout(()=>socket.destroy(new Error('Nova Operator did not respond in time.')),timeout);
-    const abort=()=>socket.destroy(new Error('Session cancelled'));
+    const abort=()=>socket.destroy(new Error('Task cancelled'));
     signal?.addEventListener('abort',abort,{once:true});
     const finish=()=>{clearTimeout(timer);signal?.removeEventListener('abort',abort);};
     socket.on('connect',()=>socket.end(JSON.stringify(message)));
@@ -46,7 +37,7 @@ export function operatorRequest(message,{signal,timeout=15000}={}) {
 export async function native(request,signal) {
   if(!existsSync(keyFile))writeFileSync(keyFile,randomBytes(32),{mode:0o600,flag:'wx'});
   chmodSync(keyFile,0o600);
-  const result=await operatorRequest({command:'execute',envelope:signedEnvelope(request,readFileSync(keyFile))},{signal});
+  const result=await operatorRequest({command:'execute',envelope:signedEnvelope(request,readFileSync(keyFile))},{signal,timeout:60000});
   if(result.error)throw new Error(result.error);
   return result;
 }
@@ -55,88 +46,60 @@ export async function permissions() {
   try{return {installed,running:true,...await operatorRequest({command:'permissions'},{timeout:5000})};}
   catch{return {installed,running:false,accessibility:false,screenRecording:false};}
 }
+const describe=(name,input)=>{
+  const at=input.coordinate?` at ${input.coordinate.join(', ')}`:'';
+  if(name==='type')return `Typed ${JSON.stringify(String(input.text).slice(0,80))}`;
+  if(name==='key')return `Pressed ${input.text}`;
+  if(name==='scroll')return `Scrolled ${input.scroll_direction}${at}`;
+  if(name==='left_click_drag')return `Dragged to ${input.coordinate?.join(', ')}`;
+  return `${name.replaceAll('_',' ')}${at}`;
+};
 
-export function createComputer(store,ai,{run=native,clock=Date.now,permissionCheck=permissions}={}) {
-  let session=null,busy=false;
-  const pending=new Map(),screens=new Map(),tasks=new Map();
+export function createComputer(store,{run=native,permissionCheck=permissions,agent=runAgent,call}={}) {
+  let current=null;
+  const screens=new Map(), memory=new Map();
   const owner=()=>store.db.prepare("SELECT value FROM settings WHERE key='computer_owner'").get()?.value;
   const authorize=device=>{
     if(owner()!==device || !store.devices().some(d=>d.id===device))fail('Computer control is available only to the locally designated owner iPhone');
     if(store.stopped())fail('Nova is emergency stopped');
   };
-  const grant=device=>{
-    authorize(device);
-    if(!session||session.device!==device||session.expires<=clock())fail('Start a new computer session on your iPhone');
-    return session;
-  };
-  const lock=()=>{if(busy)fail('Another computer request is running');busy=true;};
-  const describe=(action,app)=>action.kind==='type'?`Type in ${app}: ${action.text}`:action.kind==='key'?`Press ${action.key} in ${app}`:action.kind==='scroll'?`Scroll ${action.direction} in ${app}`:`Click in ${app} at ${action.x}, ${action.y} (0–1000 window coordinates)`;
-  async function propose(device,id,signal) {
-    const allowed=grant(device), task=tasks.get(id);
-    if(!task||task.device!==device||task.session!==allowed.id)fail('Computer task session ended');
-    if(task.step>=8)fail('Eight-step limit reached. Start a new task to continue.');
-    const screen=await run({kind:'observe',app:allowed.app},signal);
-    grant(device);
-    if(!screen.snapshot||typeof screen.png!=='string'||screen.png.length>6_000_000)fail('Invalid window capture');
-    screens.set(id,{device,png:screen.png});
-    const result=await ai.computer(`${id}:${task.step}`,{app:allowed.app,task:task.message,previous:task.previous,image:screen.png},signal);
-    grant(device);
-    if(session.id!==task.session||signal.aborted)fail('Computer session changed or was cancelled');
-    const action=validateAction(result.action);
-    if(action.kind==='done'){tasks.delete(id);return {...result,message:action.message};}
-    const summary=describe(action,allowed.app);
-    const approvalID=randomBytes(16).toString('hex');
-    pending.set(id,{approvalID,device,session:allowed.id,action,snapshot:screen.snapshot,expires:Math.min(clock()+120000,allowed.expires)});
-    store.event(id,'approval_requested',summary);
-    return {message:'Review this action on your iPhone. Nothing has been clicked or typed yet.',needsApproval:true,approvalID,summary,action,estimatedUSD:result.estimatedUSD};
-  }
   return {
-    status(device){return {owner:owner()===device,active:session?.device===device&&session.expires>clock(),app:session?.device===device?session.app:null,expires:session?.device===device?session.expires:null,apps:APPS,busy};},
+    status(device){return {owner:owner()===device,busy:Boolean(current),task:current?.device===device?current.id:null};},
     permissions:permissionCheck,
-    async start(device,app,signal){
-      authorize(device);if(!APPS.includes(app))fail('App is outside supported scope');lock();
+    async task(device,id,message,signal){
+      authorize(device);
+      if(current)fail('Nova is already working on something. Stop it or wait for it to finish.');
+      current={id,device};
       try{
         const permission=await permissionCheck();
-        if(!permission.installed&&permission.installed!==undefined)fail('Build the signed Nova Operator Mac helper first.');
+        if(!permission.installed&&permission.installed!==undefined)fail('Build the signed Nova Operator Mac app first.');
         if(permission.running===false)fail(NOT_RUNNING);
         const missing=[!permission.accessibility&&'Accessibility',!permission.screenRecording&&'Screen Recording'].filter(Boolean);
-        if(missing.length)fail(`Nova Operator still needs ${missing.join(' and ')} access on the Mac. Open System Settings → Privacy & Security → ${missing[0]}, add Nova Operator and allow it. Permissions must pass from the running Core service, not only from a terminal.`);
-        authorize(device);if(signal.aborted)fail('Session cancelled');
-        await run({kind:'activate',app},signal);authorize(device);
-        session={id:randomBytes(16).toString('hex'),device,app,expires:clock()+20*60000};pending.clear();tasks.clear();screens.clear();
-        return this.status(device);
-      }finally{busy=false;}
+        if(missing.length)fail(`Nova Operator still needs ${missing.join(' and ')} access on the Mac. Open System Settings → Privacy & Security → ${missing[0]} and allow Nova Operator.`);
+        await run({action:'begin'},signal);
+        let spent=0;
+        const result=await agent({task:message,history:memory.get(device)??[],signal,call,
+          execute:async request=>{authorize(device);if(signal.aborted)fail('Task cancelled');return await run(request,signal);},
+          spend:async(turn,request)=>{
+            authorize(device);
+            if(spent+TURN_RESERVATION_MICROS>TASK_CAP_MICROS)fail(`I stopped because this task reached its $${TASK_CAP_MICROS/1e6} limit. Ask me to keep going if you want.`);
+            const reservation=`${id}:${turn}`;
+            if(!store.reserveAI(reservation,TURN_RESERVATION_MICROS,AI_BUDGET_MICROS))fail(`Nova reached its $${AI_BUDGET_MICROS/1e6} AI allowance.`);
+            let data;
+            // Unbilled provider errors release the hold; timeouts keep it because billing is unknown.
+            try{data=await request();}catch(error){if(error.unbilled)store.settleAI(reservation,0);throw error;}
+            const cost=agentCost(data.usage);
+            store.settleAI(reservation,cost);spent+=cost;
+            return data;
+          },
+          onNarration:text=>store.event(id,'narration',text.slice(0,600)),
+          onAction:(name,input)=>store.event(id,'action',describe(name,input)),
+          onScreen:jpeg=>screens.set(device,{id,jpeg})});
+        memory.set(device,[...(memory.get(device)??[]),{role:'user',content:message.slice(0,1000)},{role:'assistant',content:result.message.slice(0,1500)}].slice(-6));
+        return {message:result.message,estimatedUSD:spent/1e6,actions:result.actions};
+      }finally{current=null;}
     },
-    async plan(device,id,message,signal){
-      const allowed=grant(device);lock();
-      try{
-        if([...pending.values()].some(p=>p.expires>clock()))fail('Approve or reject the waiting action before starting another task');
-        tasks.set(id,{device,session:allowed.id,message,step:0,previous:[]});
-        return await propose(device,id,signal);
-      }finally{busy=false;}
-    },
-    checkApproval(device,id,approvalID){
-      const allowed=grant(device), approval=pending.get(id);
-      if(!approval||approval.device!==device||approval.session!==allowed.id||approval.expires<=clock()||approval.approvalID!==approvalID)fail('Approval expired, already used, or belongs to another action/session');
-    },
-    async approve(device,id,signal,approvalID){
-      const allowed=grant(device);lock();
-      try{
-        const approval=pending.get(id);
-        this.checkApproval(device,id,approvalID);
-        pending.delete(id); // Consume before execution: never replay uncertain input.
-        const action=validateAction(approval.action);
-        authorize(device);
-        await run({...action,app:allowed.app,snapshot:approval.snapshot},signal);
-        store.event(id,'input_delivered',describe(action,allowed.app));
-        const task=tasks.get(id);task.step++;task.previous.push(describe(action,allowed.app));
-        if(signal.aborted)fail('Computer task cancelled');
-        return await propose(device,id,signal);
-      }finally{busy=false;}
-    },
-    reject(device,id,approvalID){this.checkApproval(device,id,approvalID);pending.delete(id);tasks.delete(id);screens.delete(id);store.updateJob(id,'cancelled');},
-    end(device){authorize(device);session=null;pending.clear();tasks.clear();screens.clear();},
-    stop(){session=null;pending.clear();tasks.clear();screens.clear();},
-    screen(device,id){grant(device);const screen=screens.get(id);if(screen?.device!==device)fail('Screen not found');return Buffer.from(screen.png,'base64');}
+    stop(){current=null;screens.clear();memory.clear();},
+    screen(device,id){authorize(device);const screen=screens.get(device);if(screen?.id!==id)fail('Screen not found');return Buffer.from(screen.jpeg,'base64');}
   };
 }

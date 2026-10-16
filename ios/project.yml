@@ -27,6 +27,8 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Nova
         INFOPLIST_KEY_UIUserInterfaceStyle: Dark
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nova listens when you tap the mic so you can talk to it."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Nova turns what you say into text so it can act on your request."
         INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES

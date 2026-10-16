@@ -14,13 +14,13 @@ test('signed native executor denies forged, expired, replayed and unsupported in
   assert.equal(typeof response.error,'string','Native executor accepted unsafe input');
   return response.error;
  };
- const action={kind:'shell',app:'TextEdit'}; // Deliberately unsupported; never generates GUI events.
+ const action={action:'shell'}; // Deliberately unsupported; never generates GUI events.
  assert.match(await rejected(signedEnvelope(action,randomBytes(32))),/Invalid or expired/);
  assert.match(await rejected(signedEnvelope(action,key,Date.now()-20000)),/Invalid or expired/);
  const valid=signedEnvelope(action,key);
- assert.match(await rejected(valid),/Unknown operation/);
+ assert.match(await rejected(valid),/Unsupported action/);
  assert.match(await rejected(valid),/already used/);
- const changed=signedEnvelope(action,key);changed.payload=Buffer.from(JSON.stringify({...action,kind:'activate'})).toString('base64');
+ const changed=signedEnvelope(action,key);changed.payload=Buffer.from(JSON.stringify({...action,action:'screenshot'})).toString('base64');
  assert.match(await rejected(changed),/Invalid or expired/);
  assert.match((await operatorRequest({command:'shell'})).error,/Unsupported request/);
 });

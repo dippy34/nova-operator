@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { configuredKey, MODEL, pricedUsage } from './claude-worker.mjs';
 import {workerLaunch} from './brain-sandbox.mjs';
 
-export const AI_BUDGET_MICROS = 1_000_000; // $1 lifetime allowance, not a daily reset.
+export const AI_BUDGET_MICROS = 5_000_000; // $5 lifetime allowance, not a daily reset.
 export const RESERVATION_MICROS = 10_000; // $0.01 retained on unknown outcomes.
 const errors = {
   KEY: 'Add a Claude API key to the private .env.local file on your Mac (permissions 600).',
@@ -20,7 +20,7 @@ export function brokerBodyValid(body) {
   if(!body||body.model!==MODEL||body.max_tokens!==512||body.thinking?.type!=='disabled'||
     Object.keys(body).some(k=>!['model','max_tokens','thinking','system','messages','tools','tool_choice'].includes(k))||
     typeof body.system!=='string'||body.system.length>4000||!Array.isArray(body.messages)||body.messages.length>7||JSON.stringify(body).length>6_100_000)return false;
-  if(body.tools&&(!Array.isArray(body.tools)||body.tools.length!==1||body.tools[0].name!=='computer_action'||body.tools[0].type||JSON.stringify(body.tools).length>5000))return false;
+  if(body.tools!==undefined||body.tool_choice!==undefined)return false;
   let textLength=0,images=0;
   for(const message of body.messages){
     if(!['user','assistant'].includes(message.role))return false;
@@ -82,18 +82,6 @@ export function createAI(store, { request = callWorker, configured = () => Boole
   let busy = false;
   return {
     status() { return { configured: configured(), model: MODEL, usedUSD: store.aiSpent()/1e6, allowanceUSD: AI_BUDGET_MICROS/1e6, busy }; },
-    async computer(id,computer,signal) {
-      if(!configured())throw new Error(errors.KEY);
-      if(busy)throw new Error('Nova is already answering a request. Please wait.');
-      busy=true;
-      try{
-        if(!store.reserveAI(id,RESERVATION_MICROS,AI_BUDGET_MICROS))throw new Error('Nova reached its $1 AI allowance.');
-        const result=await request({computer},signal);
-        if(!Number.isSafeInteger(result.costMicros)||result.costMicros<0||result.costMicros>RESERVATION_MICROS)throw new Error(errors.USAGE);
-        store.settleAI(id,result.costMicros);
-        return {...result,estimatedUSD:result.costMicros/1e6};
-      }finally{busy=false;}
-    },
     async chat(id, deviceId, message, signal) {
       if (!configured()) throw new Error(errors.KEY);
       if (busy) throw new Error('Nova is already answering a message. Please wait.');
@@ -101,7 +89,7 @@ export function createAI(store, { request = callWorker, configured = () => Boole
       try {
         const messages = store.aiHistory(deviceId);
         messages.push({role:'user',content:message});
-        if (!store.reserveAI(id, RESERVATION_MICROS, AI_BUDGET_MICROS)) throw new Error('Nova reached its $1 AI allowance. Change it locally on the Mac before continuing.');
+        if (!store.reserveAI(id, RESERVATION_MICROS, AI_BUDGET_MICROS)) throw new Error(`Nova reached its $${AI_BUDGET_MICROS/1e6} AI allowance. Change it locally on the Mac before continuing.`);
         // Reserve before dispatch. Timeout/stop/crash retains it because billing is unknown.
         const result = await request(messages, signal);
         if (!Number.isSafeInteger(result.costMicros) || result.costMicros < 0 || result.costMicros > RESERVATION_MICROS) throw new Error(errors.USAGE);

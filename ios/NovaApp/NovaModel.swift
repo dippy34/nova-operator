@@ -1,7 +1,8 @@
 import Foundation
 import SwiftUI
 import Security
-import LocalAuthentication
+import AVFoundation
+import Speech
 
 struct NovaStatus: Decodable {
     let connected: Bool
@@ -13,14 +14,10 @@ struct NovaStatus: Decodable {
 }
 struct NovaComputerStatus: Decodable {
     let owner: Bool
-    let active: Bool
-    let app: String?
-    let expires: Double?
-    let apps: [String]
     let busy: Bool
+    let task: String?
 }
 struct EndComputerResult: Decodable { let ended: Bool }
-struct RejectedComputerResult: Decodable { let status: String }
 struct NovaAIStatus: Decodable {
     let configured: Bool
     let model: String
@@ -100,8 +97,8 @@ final class NovaSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Se
 }
 
 /// This v0.1 transport uses a Keychain-stored bearer credential over TLS + Tailscale.
-/// Signed device requests remain a later milestone. Reviewed computer sessions are
-/// restricted to the locally designated owner, expire, and bind each approval to one action.
+/// Signed device requests remain a later milestone. Computer control is limited to the
+/// locally designated owner iPhone and runs without per-action approval.
 @MainActor
 final class NovaModel: ObservableObject {
     private let session = URLSession(configuration: .ephemeral, delegate: NovaSessionDelegate(), delegateQueue: nil)
@@ -116,7 +113,15 @@ final class NovaModel: ObservableObject {
     @Published var chat: NovaDetail?
     @Published var computer: NovaComputerStatus?
     @Published var computerScreen: Data?
+    @Published var voiceReplies = UserDefaults.standard.object(forKey: "nova.voiceReplies") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(voiceReplies, forKey: "nova.voiceReplies"); if !voiceReplies { speaker.stop() } }
+    }
+    let speaker = Speaker()
+    let listener = Listener()
     private var screenRevision = ""
+    private var spoken: Set<String>?
+
+    var working: Bool { chat.map { ["queued","running"].contains($0.status) } ?? false }
 
     var paired: Bool { KeychainToken.read() != nil }
 
@@ -198,14 +203,16 @@ final class NovaModel: ObservableObject {
             ai = status.ai
             computer = status.computer
             if let latest = jobs.first(where: { ["ai.chat","computer.task"].contains($0.type) }) {
-                chat = try await request("/v1/jobs/\(latest.id)")
-                let revision = latest.id + latest.updated_at
-                if latest.type == "computer.task", status.computer?.active == true, screenRevision != revision {
+                let detail: NovaDetail = try await request("/v1/jobs/\(latest.id)")
+                chat = detail
+                speakNew(detail)
+                let revision = latest.id + latest.updated_at + String(detail.events.count)
+                if latest.type == "computer.task", screenRevision != revision {
                     var req = URLRequest(url: URL(string:"/v1/computer/screen/\(latest.id)",relativeTo:try baseURL())!)
                     req.setValue("Bearer \(KeychainToken.read() ?? "")",forHTTPHeaderField:"Authorization")
                     let (data,response) = try await session.data(for:req)
-                    if (response as? HTTPURLResponse)?.statusCode == 200 {computerScreen = data; screenRevision = revision}
-                } else if latest.type != "computer.task" || status.computer?.active != true {computerScreen = nil}
+                    if (response as? HTTPURLResponse)?.statusCode == 200 { computerScreen = data; screenRevision = revision }
+                } else if latest.type != "computer.task" { computerScreen = nil }
             }
             errorMessage = nil
         } catch {
@@ -240,37 +247,45 @@ final class NovaModel: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func startComputer(_ app: String) async {
-        guard !busy else {return}
-        busy = true; defer {busy = false}
-        do { let _: NovaComputerStatus = try await request("/v1/computer/session",method:"POST",body:["app":app]); await refresh() }
-        catch {errorMessage = error.localizedDescription}
+    /// Owner iPhones talk to the computer agent, which also handles plain conversation.
+    @discardableResult
+    func send(_ message: String) async -> Bool {
+        speaker.stop()
+        return await submit(computer?.owner == true ? "computer.task" : "ai.chat", message: message)
     }
 
-    func endComputer() async {
-        busy = true; defer {busy = false}
-        do {let _:EndComputerResult = try await request("/v1/computer/end",method:"POST",body:[:]);computerScreen = nil;await refresh()}
-        catch {errorMessage = error.localizedDescription}
+    func stopTask() async {
+        speaker.stop()
+        do { let _: EndComputerResult = try await request("/v1/computer/end", method: "POST", body: [:]); await refresh() }
+        catch { errorMessage = error.localizedDescription }
     }
 
-    func reviewComputer(_ id: String, approvalID: String?, approve: Bool) async {
-        guard !busy else {return}
-        guard let approvalID else {errorMessage = "Refresh the proposed action before approving it.";return}
-        busy = true; defer {busy = false}
-        do {
-            if approve {
-                let confirmed = try await LAContext().evaluatePolicy(.deviceOwnerAuthentication,localizedReason:"Approve this exact Nova computer action")
-                guard confirmed else {return}
-                let _:CreatedJob = try await request("/v1/computer/approve/\(id)",method:"POST",body:["approvalID":approvalID])
-            } else {
-                let _:RejectedComputerResult = try await request("/v1/computer/reject/\(id)",method:"POST",body:["approvalID":approvalID])
-            }
-            await refresh()
-        } catch {errorMessage = error.localizedDescription}
+    func toggleListening() async {
+        if listener.listening {
+            let text = await listener.stop().trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { await send(text) }
+        } else {
+            speaker.stop()
+            do { try await listener.start() } catch { errorMessage = error.localizedDescription }
+        }
+    }
+
+    /// Reads Nova's narration and final reply aloud once each. Anything already on
+    /// screen when the app launches is treated as heard.
+    private func speakNew(_ detail: NovaDetail) {
+        var lines: [(String,String)] = detail.events.filter { $0.kind == "narration" }.map { ($0.id, $0.description) }
+        if detail.status == "succeeded", let reply = detail.result?["message"] { lines.append(("\(detail.id)-reply", reply.description)) }
+        if detail.status == "failed", let error = detail.error { lines.append(("\(detail.id)-error", error)) }
+        guard var heard = spoken else { spoken = Set(lines.map(\.0)); return }
+        for (key,text) in lines where !heard.contains(key) {
+            heard.insert(key)
+            if voiceReplies && !listener.listening { speaker.say(text) }
+        }
+        spoken = heard
     }
 
     func unpair() {
-        KeychainToken.clear(); jobs = []; chat = nil; ai = nil; computer = nil; computerScreen = nil; connection = "Not connected"; errorMessage = nil
+        speaker.stop(); KeychainToken.clear(); jobs = []; chat = nil; ai = nil; computer = nil; computerScreen = nil; connection = "Not connected"; errorMessage = nil
     }
 }
 
@@ -293,5 +308,76 @@ enum KeychainToken {
     static func clear() {
         let query: [String: Any] = [kSecClass as String:kSecClassGenericPassword, kSecAttrService as String:service, kSecAttrAccount as String:account]
         SecItemDelete(query as CFDictionary)
+    }
+}
+
+@MainActor
+final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+    @Published var speaking = false
+    private let synthesizer = AVSpeechSynthesizer()
+    private let voice: AVSpeechSynthesisVoice? = {
+        let english = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == "en-US" }
+        return english.first { $0.quality == .premium } ?? english.first { $0.quality == .enhanced } ?? AVSpeechSynthesisVoice(language: "en-US")
+    }()
+    override init() { super.init(); synthesizer.delegate = self }
+    func say(_ text: String) {
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = voice
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 1.05
+        synthesizer.speak(utterance)
+        speaking = true
+    }
+    func stop() { synthesizer.stopSpeaking(at: .immediate); speaking = false }
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in self.speaking = synthesizer.isSpeaking }
+    }
+}
+
+/// Tap-to-talk dictation. Uses on-device recognition when the iPhone supports it.
+@MainActor
+final class Listener: ObservableObject {
+    @Published var listening = false
+    @Published var transcript = ""
+    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private let engine = AVAudioEngine()
+    private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var task: SFSpeechRecognitionTask?
+
+    func start() async throws {
+        let speech = await withCheckedContinuation { done in SFSpeechRecognizer.requestAuthorization { done.resume(returning: $0) } }
+        guard speech == .authorized else { throw NovaError.server("Allow Speech Recognition for Nova in Settings → Privacy & Security.") }
+        guard await AVAudioApplication.requestRecordPermission() else { throw NovaError.server("Allow the microphone for Nova in Settings → Privacy & Security.") }
+        guard let recognizer, recognizer.isAvailable else { throw NovaError.server("Speech recognition is not available right now.") }
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .duckOthers])
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
+        let input = engine.inputNode
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in request.append(buffer) }
+        engine.prepare()
+        try engine.start()
+        transcript = ""
+        self.request = request
+        task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
+            guard let text = result?.bestTranscription.formattedString else { return }
+            Task { @MainActor in self?.transcript = text }
+        }
+        listening = true
+    }
+
+    func stop() async -> String {
+        guard listening else { return transcript }
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        request?.endAudio()
+        try? await Task.sleep(for: .milliseconds(600))
+        task?.cancel(); task = nil; request = nil
+        listening = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        return transcript
     }
 }

@@ -2,146 +2,290 @@ import AppKit
 import ApplicationServices
 import ScreenCaptureKit
 import CryptoKit
+import Carbon.HIToolbox
 
 enum OperatorError: Error { case denied(String) }
-let apps = ["Chrome":"com.google.Chrome", "Safari":"com.apple.Safari", "TextEdit":"com.apple.TextEdit", "Calculator":"com.apple.calculator", "Notes":"com.apple.Notes", "Finder":"com.apple.finder"]
-let keys: [String:(CGKeyCode, CGEventFlags)] = ["return":(36,[]),"tab":(48,[]),"escape":(53,[]),"backspace":(51,[]),"up":(126,[]),"down":(125,[]),"left":(123,[]),"right":(124,[]),"cmd+a":(0,.maskCommand),"cmd+l":(37,.maskCommand),"cmd+n":(45,.maskCommand),"cmd+s":(1,.maskCommand)]
-
 func deny(_ text: String) throws -> Never { throw OperatorError.denied(text) }
-func attr(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
-    var value: CFTypeRef?
-    return AXUIElementCopyAttributeValue(element,name as CFString,&value) == .success ? value : nil
+
+// MARK: - Screen geometry
+
+// Claude sees the main display downscaled to fit Anthropic's recommended size and
+// replies in that image's pixels; every coordinate is mapped back here.
+struct Display {
+    let id: CGDirectDisplayID
+    let bounds: CGRect
+    let imageSize: CGSize
+    static func main() -> Display {
+        let id=CGMainDisplayID(), bounds=CGDisplayBounds(id)
+        let scale=min(1,1366/max(bounds.width,bounds.height),(1_150_000/(bounds.width*bounds.height)).squareRoot())
+        return Display(id:id,bounds:bounds,imageSize:CGSize(width:(bounds.width*scale).rounded(.down),height:(bounds.height*scale).rounded(.down)))
+    }
+    func point(_ x: Double, _ y: Double) -> CGPoint {
+        CGPoint(x:bounds.minX+x*bounds.width/imageSize.width,y:bounds.minY+y*bounds.height/imageSize.height)
+    }
+    func image(_ p: CGPoint) -> [Int] {
+        [Int(((p.x-bounds.minX)*imageSize.width/bounds.width).rounded()),Int(((p.y-bounds.minY)*imageSize.height/bounds.height).rounded())]
+    }
 }
-func text(_ element: AXUIElement, _ name: String) -> String { attr(element,name) as? String ?? "" }
-func fingerprint(_ element: AXUIElement, depth: Int = 0, remaining: inout Int) -> String {
-    guard depth < 9, remaining > 0 else { return "" }
-    remaining -= 1
-    var value = [kAXRoleAttribute,kAXSubroleAttribute,kAXTitleAttribute,kAXDescriptionAttribute].map { text(element,$0) }.joined(separator:"|")
-    // Do not collect secure-field values, including in the snapshot hash.
-    if text(element,kAXSubroleAttribute) != kAXSecureTextFieldSubrole { value += "|" + text(element,kAXValueAttribute).prefix(1000) }
-    for child in (attr(element,kAXChildrenAttribute) as? [AXUIElement] ?? []).prefix(100) { value += fingerprint(child,depth:depth+1,remaining:&remaining) }
-    return value
-}
-func containsCredential(_ value: String) -> Bool {
-    value.range(of:"sk-(ant-|proj-)[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----",options:.regularExpression) != nil
-}
-func sha(_ data: Data) -> String { SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined() }
 
 @MainActor
-func capture(_ window: SCWindow) async throws -> Data {
-    let filter=SCContentFilter(desktopIndependentWindow:window)
+func capture(region: CGRect? = nil) async throws -> [String:Any] {
+    let display=Display.main()
+    let content=try await SCShareableContent.excludingDesktopWindows(false,onScreenWindowsOnly:true)
+    guard let screen=content.displays.first(where:{ $0.displayID == display.id }) else { try deny("Main display unavailable") }
+    // Nova's own cursor stays out of what Claude sees.
+    let own=content.windows.filter { $0.owningApplication?.processID == ProcessInfo.processInfo.processIdentifier }
     let config=SCStreamConfiguration()
-    let scale=min(1,min(1200/window.frame.width,900/window.frame.height))
-    config.width=max(1,Int(window.frame.width*scale));config.height=max(1,Int(window.frame.height*scale))
-    config.showsCursor=false;config.ignoreShadowsSingleWindow=true
-    let image=try await SCScreenshotManager.captureImage(contentFilter:filter,configuration:config)
-    guard let png=NSBitmapImageRep(cgImage:image).representation(using:.png,properties:[:]) else {try deny("Screenshot failed")}
-    return png
+    config.showsCursor=false
+    var size=display.imageSize
+    if let region {
+        config.sourceRect=region
+        let fit=min(display.imageSize.width/region.width,display.imageSize.height/region.height)
+        size=CGSize(width:max(1,(region.width*fit).rounded(.down)),height:max(1,(region.height*fit).rounded(.down)))
+    }
+    config.width=Int(size.width); config.height=Int(size.height)
+    let image=try await SCScreenshotManager.captureImage(contentFilter:SCContentFilter(display:screen,excludingWindows:own),configuration:config)
+    guard let jpeg=NSBitmapImageRep(cgImage:image).representation(using:.jpeg,properties:[.compressionFactor:0.8]) else { try deny("Screenshot failed") }
+    return ["image":jpeg.base64EncodedString(),"width":Int(size.width),"height":Int(size.height)]
+}
+
+// MARK: - Nova's cursor
+
+final class CursorView: NSView {
+    static let size=CGFloat(56), tip=CGPoint(x:8,y:6)
+    var flash=false
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        let points:[(CGFloat,CGFloat)]=[(8,6),(8,42),(17,33),(23,47),(30,44),(24,30),(36,30)]
+        let path=NSBezierPath()
+        path.move(to:NSPoint(x:points[0].0,y:points[0].1))
+        for p in points.dropFirst() { path.line(to:NSPoint(x:p.0,y:p.1)) }
+        path.close(); path.lineJoinStyle = .round; path.lineWidth=2.5
+        NSGraphicsContext.saveGraphicsState()
+        let glow=NSShadow(); glow.shadowColor=NSColor.systemCyan.withAlphaComponent(0.9); glow.shadowBlurRadius=flash ? 16 : 8; glow.shadowOffset = .zero; glow.set()
+        (flash ? NSColor.white : NSColor(calibratedRed:0.2,green:0.8,blue:1,alpha:1)).setFill(); path.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        NSColor.white.setStroke(); path.stroke()
+    }
+    func pulse() {
+        flash=true; needsDisplay=true
+        Task { @MainActor in try? await Task.sleep(for:.milliseconds(180)); self.flash=false; self.needsDisplay=true }
+    }
 }
 
 @MainActor
-func current(_ app: String) async throws -> (NSRunningApplication, SCWindow, String) {
-    guard let bundle = apps[app], let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier == bundle else { try deny("Selected app is not in front. Bring it forward and try again.") }
-    guard AXIsProcessTrusted(), CGPreflightScreenCaptureAccess() else { try deny("Allow Nova Operator in macOS Accessibility and Screen Recording settings.") }
-    let content = try await SCShareableContent.excludingDesktopWindows(true,onScreenWindowsOnly:true)
-    guard let window = content.windows.first(where: { $0.owningApplication?.processID == front.processIdentifier && $0.windowLayer == 0 && $0.frame.width > 50 && $0.frame.height > 50 }) else { try deny("No visible window in the selected app.") }
-    let axApp = AXUIElementCreateApplication(front.processIdentifier)
-    guard let raw = attr(axApp,kAXFocusedWindowAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else { try deny("Cannot identify the focused window.") }
-    let axWindow = unsafeBitCast(raw,to:AXUIElement.self)
-    var position = CGPoint.zero, size = CGSize.zero
-    guard let p = attr(axWindow,kAXPositionAttribute), let s = attr(axWindow,kAXSizeAttribute),
-          CFGetTypeID(p) == AXValueGetTypeID(), CFGetTypeID(s) == AXValueGetTypeID(),
-          AXValueGetValue(unsafeBitCast(p,to:AXValue.self),.cgPoint,&position),
-          AXValueGetValue(unsafeBitCast(s,to:AXValue.self),.cgSize,&size),
-          abs(position.x-window.frame.minX) < 3, abs(position.y-window.frame.minY) < 3,
-          abs(size.width-window.frame.width) < 3, abs(size.height-window.frame.height) < 3 else { try deny("Focused window changed. Capture a fresh screen.") }
-    var remaining = 400
-    let contents=fingerprint(axWindow,remaining:&remaining)
-    guard !containsCredential(contents) else {try deny("A visible credential was detected. Close or hide it before sharing this window.")}
-    let state = "\(front.processIdentifier)|\(window.windowID)|\(window.frame)|" + contents
-    return (front,window,sha(Data(state.utf8)))
+final class NovaCursor {
+    static let shared=NovaCursor()
+    let panel: NSPanel
+    let view: CursorView
+    var hide: Task<Void,Never>?
+    init() {
+        panel=NSPanel(contentRect:NSRect(x:0,y:0,width:CursorView.size,height:CursorView.size),styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
+        panel.isOpaque=false; panel.backgroundColor = .clear; panel.hasShadow=false
+        panel.level = .screenSaver; panel.ignoresMouseEvents=true
+        panel.collectionBehavior=[.canJoinAllSpaces,.stationary,.fullScreenAuxiliary,.ignoresCycle]
+        view=CursorView(frame:NSRect(x:0,y:0,width:CursorView.size,height:CursorView.size))
+        panel.contentView=view; panel.alphaValue=0
+    }
+    // CoreGraphics points have a top-left origin; Cocoa windows have a bottom-left one.
+    func origin(_ p: CGPoint) -> NSPoint {
+        let height=NSScreen.screens.first?.frame.height ?? 0
+        return NSPoint(x:p.x-CursorView.tip.x,y:height-p.y+CursorView.tip.y-CursorView.size)
+    }
+    func fly(to p: CGPoint) async {
+        hide?.cancel()
+        if panel.alphaValue < 0.05 { panel.setFrameOrigin(origin(realPointer())); panel.orderFrontRegardless() }
+        let from=panel.frame.origin, to=origin(p)
+        let duration=min(0.55,max(0.18,hypot(to.x-from.x,to.y-from.y)/2200))
+        await withCheckedContinuation { (done: CheckedContinuation<Void,Never>) in
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration=duration; context.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut)
+                self.panel.animator().setFrameOrigin(to); self.panel.animator().alphaValue=1
+            }, completionHandler:{ done.resume() })
+        }
+    }
+    func idle() {
+        hide?.cancel()
+        hide=Task { @MainActor in
+            try? await Task.sleep(for:.seconds(4))
+            guard !Task.isCancelled else { return }
+            NSAnimationContext.runAnimationGroup({ $0.duration=0.4; self.panel.animator().alphaValue=0 },completionHandler:nil)
+        }
+    }
+    func vanish() { hide?.cancel(); panel.alphaValue=0 }
 }
 
-func pressable(_ element: AXUIElement) -> AXUIElement? {
-    var current: AXUIElement? = element
-    for _ in 0..<3 {
-        guard let candidate=current else { return nil }
-        var names: CFArray?
-        if AXUIElementCopyActionNames(candidate,&names) == .success, (names as? [String] ?? []).contains(kAXPressAction) { return candidate }
-        guard let parent=attr(candidate,kAXParentAttribute), CFGetTypeID(parent) == AXUIElementGetTypeID() else { return nil }
-        current=unsafeBitCast(parent,to:AXUIElement.self)
-    }
-    return nil
+// MARK: - Input
+
+let source=CGEventSource(stateID:.hidSystemState)
+func realPointer() -> CGPoint { CGEvent(source:nil)?.location ?? .zero }
+func mouse(_ type: CGEventType, _ p: CGPoint, _ button: CGMouseButton = .left, clicks: Int = 1, flags: CGEventFlags = []) {
+    let event=CGEvent(mouseEventSource:source,mouseType:type,mouseCursorPosition:p,mouseButton:button)
+    event?.setIntegerValueField(.mouseEventClickState,value:Int64(clicks)); event?.flags=flags
+    event?.post(tap:.cghidEventTap)
+}
+func restorePointer(_ p: CGPoint) async {
+    try? await Task.sleep(for:.milliseconds(40))
+    CGWarpMouseCursorPosition(p); CGAssociateMouseAndMouseCursorPosition(1)
 }
 
-func validate(_ request: [String:Any]) throws {
-    guard let kind = request["kind"] as? String, ["activate","observe","click","type","key","scroll"].contains(kind),
-          let app = request["app"] as? String, apps[app] != nil else { try deny("Unknown operation or app") }
-    if ["click","scroll"].contains(kind) {
-        guard let x=request["x"] as? Double, let y=request["y"] as? Double, x.isFinite, y.isFinite, (0...1000).contains(x), (0...1000).contains(y) else { try deny("Coordinates outside selected window") }
+let modifierFlags: [String:CGEventFlags] = ["ctrl":.maskControl,"control":.maskControl,"alt":.maskAlternate,"option":.maskAlternate,"opt":.maskAlternate,"shift":.maskShift,"super":.maskCommand,"cmd":.maskCommand,"command":.maskCommand,"meta":.maskCommand,"win":.maskCommand,"fn":.maskSecondaryFn]
+let modifierKeys: [String:CGKeyCode] = ["ctrl":59,"control":59,"alt":58,"option":58,"opt":58,"shift":56,"super":55,"cmd":55,"command":55,"meta":55,"win":55,"fn":63]
+let keyCodes: [String:CGKeyCode] = {
+    var codes: [String:CGKeyCode] = ["a":0,"s":1,"d":2,"f":3,"h":4,"g":5,"z":6,"x":7,"c":8,"v":9,"b":11,"q":12,"w":13,"e":14,"r":15,"y":16,"t":17,"1":18,"2":19,"3":20,"4":21,"6":22,"5":23,"=":24,"9":25,"7":26,"-":27,"8":28,"0":29,"]":30,"o":31,"u":32,"[":33,"i":34,"p":35,"l":37,"j":38,"'":39,"k":40,";":41,"\\":42,",":43,"/":44,"n":45,"m":46,".":47,"`":50,
+        "return":36,"enter":36,"kp_enter":76,"tab":48,"space":49," ":49,"backspace":51,"escape":53,"esc":53,"delete":117,"forwarddelete":117,"home":115,"end":119,"page_up":116,"pageup":116,"prior":116,"page_down":121,"pagedown":121,"next":121,"left":123,"right":124,"down":125,"up":126,"capslock":57,"caps_lock":57,
+        "f1":122,"f2":120,"f3":99,"f4":118,"f5":96,"f6":97,"f7":98,"f8":100,"f9":101,"f10":109,"f11":103,"f12":111,
+        "minus":27,"equal":24,"comma":43,"period":47,"slash":44,"backslash":42,"semicolon":41,"apostrophe":39,"grave":50,"bracketleft":33,"bracketright":30]
+    for (alias,name) in [("arrowleft","left"),("arrowright","right"),("arrowup","up"),("arrowdown","down")] { codes[alias]=codes[name] }
+    return codes
+}()
+
+func modifiers(_ text: String?) throws -> CGEventFlags {
+    guard let text, !text.isEmpty else { return [] }
+    var flags: CGEventFlags = []
+    for part in text.lowercased().split(separator:"+") {
+        guard let flag=modifierFlags[String(part)] else { try deny("Unknown modifier \(part)") }
+        flags.insert(flag)
     }
-    if kind == "scroll", !["up","down"].contains(request["direction"] as? String ?? "") { try deny("Invalid scroll direction") }
-    if kind == "type" {
-        guard let value=request["text"] as? String, !value.isEmpty, value.utf16.count <= 500,
-              !value.unicodeScalars.contains(where: {$0.value < 32 || $0.value == 127}) else { try deny("Type only printable text, at most 500 characters. Submit keys separately.") }
+    return flags
+}
+func combo(_ text: String) throws -> (CGKeyCode,CGEventFlags) {
+    let parts=text.split(separator:"+",omittingEmptySubsequences:false).map { String($0) }
+    guard let last=parts.last, !last.isEmpty || text.hasSuffix("+") else { try deny("Empty key") }
+    let keyName=last.isEmpty ? "+" : last
+    let flags=try modifiers(parts.dropLast().joined(separator:"+"))
+    let lower=keyName.lowercased().replacingOccurrences(of:"-",with:"_")
+    if let code=keyCodes[lower] ?? keyCodes[keyName] { return (code,flags.union(keyName.count == 1 && keyName != lower ? .maskShift : [])) }
+    if let code=modifierKeys[lower] { return (code,flags) }
+    if keyName == "+" { return (24,flags.union(.maskShift)) }
+    try deny("Unsupported key \(keyName)")
+}
+func press(_ code: CGKeyCode, _ flags: CGEventFlags, down: Bool) {
+    let event=CGEvent(keyboardEventSource:source,virtualKey:code,keyDown:down)
+    event?.flags=flags; event?.post(tap:.cghidEventTap)
+}
+func typeText(_ text: String) async {
+    for character in text {
+        if character == "\n" || character == "\r\n" { press(36,[],down:true); press(36,[],down:false) }
+        else {
+            let units=Array(String(character).utf16)
+            for down in [true,false] {
+                let event=CGEvent(keyboardEventSource:source,virtualKey:0,keyDown:down)
+                event?.flags=[]; event?.keyboardSetUnicodeString(stringLength:units.count,unicodeString:units)
+                event?.post(tap:.cghidEventTap)
+            }
+        }
+        try? await Task.sleep(for:.milliseconds(6))
     }
-    if kind == "key", keys[request["key"] as? String ?? ""] == nil { try deny("Key combination not allowed") }
-    if !["activate","observe"].contains(kind), request["snapshot"] as? String == nil { try deny("Missing approved snapshot") }
+}
+
+// MARK: - Actions
+
+@MainActor var halted=false
+@MainActor var heldAt: CGPoint?
+@MainActor var lastPoint: CGPoint?
+
+@MainActor
+func halt() {
+    halted=true
+    if let p=heldAt { mouse(.leftMouseUp,p); heldAt=nil }
+    NovaCursor.shared.vanish()
 }
 
 @MainActor
 func perform(_ request: [String:Any]) async throws -> [String:Any] {
-    try validate(request)
-    let app=request["app"] as! String, kind=request["kind"] as! String
-    if kind == "activate" {
-        guard let url=NSWorkspace.shared.urlForApplication(withBundleIdentifier:apps[app]!) else { try deny("App is not installed") }
-        let config=NSWorkspace.OpenConfiguration(); config.activates=true
-        _ = try await NSWorkspace.shared.openApplication(at:url,configuration:config)
-        return ["message":"Opened \(app)"]
+    let action=request["action"] as? String ?? ""
+    let display=Display.main()
+    if action == "begin" { halted=false; return ["width":Int(display.imageSize.width),"height":Int(display.imageSize.height)] }
+    if halted { try deny("Stopped on the Mac with Control-Option-S. Send a new request to start again.") }
+    guard AXIsProcessTrusted(), CGPreflightScreenCaptureAccess() else { try deny("Allow Nova Operator in macOS Accessibility and Screen Recording settings.") }
+    func coordinate(_ key: String = "coordinate") throws -> CGPoint? {
+        guard let raw=request[key] else { return nil }
+        guard let pair=raw as? [Double], pair.count == 2, pair.allSatisfy({ $0.isFinite }),
+              (0...display.imageSize.width).contains(pair[0]), (0...display.imageSize.height).contains(pair[1]) else { try deny("Coordinate outside the screen") }
+        return display.point(pair[0],pair[1])
     }
-    let (front,window,snapshot)=try await current(app)
-    let png=try await capture(window)
-    let (_,afterWindow,after)=try await current(app)
-    guard snapshot == after, window.windowID == afterWindow.windowID else {try deny("Window changed during capture")}
-    let reviewedSnapshot=sha(Data((snapshot+sha(png)).utf8))
-    if kind == "observe" {
-        return ["snapshot":reviewedSnapshot,"png":png.base64EncodedString(),"app":app]
-    }
-    guard request["snapshot"] as? String == reviewedSnapshot else { try deny("The window changed after review. Request a fresh screen before acting.") }
-    guard (request["expires"] as? Double ?? 0) > Date().timeIntervalSince1970 else {try deny("Action authorization expired before input")}
-    let axApp=AXUIElementCreateApplication(front.processIdentifier)
-    if let raw=attr(axApp,kAXFocusedUIElementAttribute), CFGetTypeID(raw)==AXUIElementGetTypeID(), text(unsafeBitCast(raw,to:AXUIElement.self),kAXSubroleAttribute)==kAXSecureTextFieldSubrole { try deny("Password fields require direct user interaction") }
-    // Targeted events go to this PID, never the global keyboard destination.
-    if kind == "type" {
-        let units=Array((request["text"] as! String).utf16)
-        guard let down=CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:true), let up=CGEvent(keyboardEventSource:nil,virtualKey:0,keyDown:false) else { try deny("Could not create input event") }
-        down.keyboardSetUnicodeString(stringLength:units.count,unicodeString:units)
-        up.keyboardSetUnicodeString(stringLength:units.count,unicodeString:units)
-        down.flags=[];up.flags=[]
-        down.postToPid(front.processIdentifier); up.postToPid(front.processIdentifier)
-    } else if kind == "key" {
-        let (code,flags)=keys[request["key"] as! String]!
-        for pressed in [true,false] { let event=CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:pressed); event?.flags=flags; event?.postToPid(front.processIdentifier) }
-    } else {
-        let point=CGPoint(x:window.frame.minX+(request["x"] as! Double)/1000*window.frame.width,y:window.frame.minY+(request["y"] as! Double)/1000*window.frame.height)
-        guard window.frame.insetBy(dx:2,dy:2).contains(point) else { try deny("Window edge actions are denied") }
-        var hit: AXUIElement?
-        guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),Float(point.x),Float(point.y),&hit) == .success, let hit else { try deny("Cannot identify the click target") }
-        var hitPid:pid_t=0; AXUIElementGetPid(hit,&hitPid)
-        guard hitPid == front.processIdentifier else { try deny("Another app covers the target") }
-        // Many apps (including SwiftUI ones like Calculator) ignore mouse events posted
-        // to their PID, so press the control through Accessibility when it supports it.
-        if kind == "click", let control=pressable(hit) {
-            guard AXUIElementPerformAction(control,kAXPressAction as CFString) == .success else { try deny("The control did not accept the click") }
-        } else if kind == "click" {
-            for type in [CGEventType.leftMouseDown,.leftMouseUp] { let event=CGEvent(mouseEventSource:nil,mouseType:type,mouseCursorPosition:point,mouseButton:.left);event?.flags=[];event?.setIntegerValueField(.mouseEventClickState,value:1);event?.postToPid(front.processIdentifier) }
-        } else {
-            let event=CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:1,wheel1:request["direction"] as? String == "up" ? 300 : -300,wheel2:0,wheel3:0)
-            event?.flags=[];event?.location=point; event?.postToPid(front.processIdentifier)
+    let cursor=NovaCursor.shared
+    defer { if heldAt == nil { cursor.idle() } }
+    switch action {
+    case "screenshot":
+        return try await capture()
+    case "zoom":
+        guard let region=request["region"] as? [Double], region.count == 4, region.allSatisfy({ $0.isFinite }),
+              region[2] > region[0], region[3] > region[1] else { try deny("Invalid zoom region") }
+        let a=display.point(max(0,region[0]),max(0,region[1])), b=display.point(min(display.imageSize.width,region[2]),min(display.imageSize.height,region[3]))
+        return try await capture(region:CGRect(x:a.x-display.bounds.minX,y:a.y-display.bounds.minY,width:b.x-a.x,height:b.y-a.y))
+    case "left_click","right_click","middle_click","double_click","triple_click":
+        let p=try coordinate() ?? lastPoint ?? realPointer(), flags=try modifiers(request["text"] as? String)
+        let (button,down,up):(CGMouseButton,CGEventType,CGEventType)=action == "right_click" ? (.right,.rightMouseDown,.rightMouseUp) : action == "middle_click" ? (.center,.otherMouseDown,.otherMouseUp) : (.left,.leftMouseDown,.leftMouseUp)
+        let count=action == "double_click" ? 2 : action == "triple_click" ? 3 : 1
+        let real=realPointer()
+        await cursor.fly(to:p)
+        mouse(.mouseMoved,p)
+        for click in 1...count { mouse(down,p,button,clicks:click,flags:flags); mouse(up,p,button,clicks:click,flags:flags) }
+        cursor.view.pulse(); lastPoint=p
+        await restorePointer(real)
+    case "mouse_move":
+        guard let p=try coordinate() else { try deny("Missing coordinate") }
+        await cursor.fly(to:p)
+        if heldAt != nil { mouse(.leftMouseDragged,p); heldAt=p } else { mouse(.mouseMoved,p) }
+        lastPoint=p
+    case "left_mouse_down":
+        let p=lastPoint ?? realPointer()
+        await cursor.fly(to:p); mouse(.leftMouseDown,p); heldAt=p
+    case "left_mouse_up":
+        let p=heldAt ?? lastPoint ?? realPointer()
+        mouse(.leftMouseUp,p); heldAt=nil; cursor.view.pulse()
+    case "left_click_drag":
+        guard let start=try coordinate("start_coordinate"), let end=try coordinate() else { try deny("Missing drag coordinates") }
+        let flags=try modifiers(request["text"] as? String), real=realPointer()
+        await cursor.fly(to:start)
+        mouse(.mouseMoved,start); mouse(.leftMouseDown,start,flags:flags)
+        for step in 1...16 {
+            let t=CGFloat(step)/16, p=CGPoint(x:start.x+(end.x-start.x)*t,y:start.y+(end.y-start.y)*t)
+            mouse(.leftMouseDragged,p,flags:flags)
+            cursor.panel.setFrameOrigin(cursor.origin(p))
+            try? await Task.sleep(for:.milliseconds(20))
         }
+        mouse(.leftMouseUp,end,flags:flags); lastPoint=end
+        await restorePointer(real)
+    case "cursor_position":
+        return ["text":"\(display.image(lastPoint ?? realPointer()))"]
+    case "scroll":
+        let p=try coordinate() ?? lastPoint ?? realPointer(), flags=try modifiers(request["text"] as? String)
+        guard let direction=request["scroll_direction"] as? String, ["up","down","left","right"].contains(direction) else { try deny("Invalid scroll direction") }
+        let amount=Int32(max(1,min(30,(request["scroll_amount"] as? Double ?? 3))))
+        let real=realPointer()
+        await cursor.fly(to:p); mouse(.mouseMoved,p)
+        for _ in 0..<amount {
+            let vertical:Int32=direction == "up" ? 3 : direction == "down" ? -3 : 0, horizontal:Int32=direction == "left" ? 3 : direction == "right" ? -3 : 0
+            let event=CGEvent(scrollWheelEvent2Source:source,units:.line,wheelCount:2,wheel1:vertical,wheel2:horizontal,wheel3:0)
+            event?.location=p; event?.flags=flags; event?.post(tap:.cghidEventTap)
+            try? await Task.sleep(for:.milliseconds(15))
+        }
+        lastPoint=p
+        await restorePointer(real)
+    case "type":
+        guard let text=request["text"] as? String, !text.isEmpty, text.count <= 5000 else { try deny("Type 1–5000 characters") }
+        await typeText(text)
+    case "key":
+        guard let text=request["text"] as? String else { try deny("Missing key") }
+        let (code,flags)=try combo(text), times=Int(max(1,min(100,request["repeat"] as? Double ?? 1)))
+        for _ in 0..<times { press(code,flags,down:true); press(code,flags,down:false); try? await Task.sleep(for:.milliseconds(15)) }
+    case "hold_key":
+        guard let text=request["text"] as? String else { try deny("Missing key") }
+        let (code,flags)=try combo(text), duration=max(0,min(30,request["duration"] as? Double ?? 1))
+        press(code,flags,down:true)
+        try? await Task.sleep(for:.milliseconds(Int(duration*1000)))
+        press(code,flags,down:false)
+    default:
+        try deny("Unsupported action \(action)")
     }
-    return ["message":"Approved \(kind) input delivered to \(app). Verify the next screen for the outcome."]
+    if halted { try deny("Stopped on the Mac with Control-Option-S.") }
+    return ["text":"OK"]
 }
+
+// MARK: - Authorization
 
 func authorize(_ envelope: [String:String]) throws -> [String:Any] {
     guard let dataDirectory=Bundle.main.object(forInfoDictionaryKey:"NovaCoreDataDirectory") as? String else { try deny("Unsigned configuration") }
@@ -179,8 +323,10 @@ func respond(_ raw: Data) async -> [String:Any] {
         guard command == "execute", let envelope=message["envelope"] as? [String:String] else { try deny("Unsupported request") }
         return try await perform(try authorize(envelope))
     } catch OperatorError.denied(let reason) { return ["error":reason] }
-    catch { return ["error":"macOS operation failed. Check permissions and capture a fresh screen."] }
+    catch { return ["error":"macOS operation failed. Check permissions and try again."] }
 }
+
+// MARK: - Socket
 
 // Core talks to this long-running app over a Unix socket in a 0700 directory, so
 // macOS attributes Accessibility and Screen Recording to Nova Operator itself.
@@ -240,6 +386,15 @@ func serve(_ client: Int32) {
     }
 }
 
+// MARK: - Menu bar app
+
+func registerStopShortcut() {
+    var spec=EventTypeSpec(eventClass:OSType(kEventClassKeyboard),eventKind:UInt32(kEventHotKeyPressed))
+    InstallEventHandler(GetApplicationEventTarget(),{ _,_,_ in Task { @MainActor in halt() }; return noErr },1,&spec,nil,nil)
+    var reference: EventHotKeyRef?
+    RegisterEventHotKey(UInt32(kVK_ANSI_S),UInt32(controlKey|optionKey),EventHotKeyID(signature:0x4E4F5641,id:1),GetApplicationEventTarget(),0,&reference)
+}
+
 @MainActor
 final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var item: NSStatusItem!
@@ -249,6 +404,7 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item=NSStatusBar.system.statusItem(withLength:NSStatusItem.squareLength)
         item.button?.image=NSImage(systemSymbolName:"cursorarrow.rays",accessibilityDescription:"Nova Operator")
         let menu=NSMenu(); menu.delegate=self; item.menu=menu
+        registerStopShortcut()
         // Asking on launch adds Nova Operator to both System Settings lists.
         requestPermissions()
     }
@@ -260,22 +416,25 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
             line.isEnabled=false; menu.addItem(line)
         }
         menu.addItem(.separator())
+        let stop=NSMenuItem(title:halted ? "Stopped (send a new request to resume)" : "Stop Nova  ⌃⌥S",action:#selector(stopNova),keyEquivalent:"")
+        stop.target=self; stop.isEnabled = !halted; menu.addItem(stop)
         let ask=NSMenuItem(title:"Request Permissions…",action:#selector(request),keyEquivalent:"")
         ask.target=self; menu.addItem(ask)
         menu.addItem(NSMenuItem(title:"Quit Nova Operator",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q"))
     }
     @objc func request() { requestPermissions() }
+    @objc func stopNova() { halt() }
 }
 
 @main
 struct NovaOperator {
     @MainActor static func main() {
         if CommandLine.arguments.dropFirst().first == "self-test" {
-            for invalid:[String:Any] in [["kind":"shell","app":"TextEdit"],["kind":"click","app":"TextEdit","x":-1,"y":500],["kind":"type","app":"TextEdit","text":"a\nb"],["kind":"key","app":"TextEdit","key":"cmd+space"],["kind":"observe","app":"Terminal"]] {
-                var rejected=false; do {try validate(invalid)} catch {rejected=true}
-                guard rejected else { FileHandle.standardOutput.write(encode(["error":"Native validation test failed"])); exit(1) }
-            }
-            FileHandle.standardOutput.write(encode(["negativeValidationTests":5,"passed":true])); exit(0)
+            var rejected=0
+            for bad in ["cmd+bogus","hyper+a",""] { if (try? combo(bad)) == nil { rejected+=1 } }
+            let good=["Return","ctrl+s","super+space","cmd+shift+4","Page_Down","F5","A"].allSatisfy { (try? combo($0)) != nil }
+            let passed=rejected == 3 && good
+            FileHandle.standardOutput.write(encode(["negativeKeyTests":rejected,"passed":passed])); exit(passed ? 0 : 1)
         }
         let app=NSApplication.shared
         let delegate=StatusMenu()
