@@ -57,9 +57,11 @@ open Nova.xcodeproj
 
 Check [Apple's Xcode requirements](https://developer.apple.com/xcode/system-requirements) before downloading. On the Mac inspected on 2026-10-16 (macOS 26.5.1), Xcode 26.6 is compatible; the current App Store Xcode 27.1 requires macOS 26.6. A compatible older version is available through [Apple Developer Downloads](https://developer.apple.com/download/all/?q=Xcode), with Apple sign-in.
 
-In Xcode: select the **Nova** target, choose your Apple development team under Signing & Capabilities, connect your iPhone by cable (or use paired wireless debugging), select the iPhone as run destination, and press Run. A free Apple ID may be sufficient for a personal development install, subject to Apple's current provisioning limits.
+Sign in under Xcode Settings → Apple Accounts. Keep your personal signing team out of Git: create `ios/Signing.local.xcconfig` containing `DEVELOPMENT_TEAM = YOUR_TEAM_ID`. The tracked `Config.xcconfig` optionally includes that ignored file for Debug and Release. Alternatively, select your team in Signing & Capabilities, but do not commit the resulting personal project changes. Connect your iPhone, select it as the run destination, and press Run. A free Apple ID may be sufficient for a personal development install, subject to Apple's current provisioning limits.
 
 Unlock the iPhone and accept its computer-trust prompt. Enable [Developer Mode](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device/) if Xcode requires it; that involves a device restart and confirmation on the phone. Select a unique bundle identifier if your signing team cannot provision `dev.nova.operator`. Do not commit personal signing/team changes.
+
+If iOS refuses the first launch of an installed development build, check Settings → General → VPN & Device Management and trust your own Developer App profile. Verify that the profile belongs to your signing account. Personal Team profiles expire; the profile issued during this setup expires on 2026-10-23, after which the app must be signed and installed again.
 
 An unsigned compile can be checked after full Xcode and the iOS platform are installed:
 
@@ -71,7 +73,9 @@ xcodebuild -project ios/Nova.xcodeproj -scheme Nova \
 
 Open the **native Nova app** (not Safari), enter the Tailscale **HTTPS URL** and the pairing code displayed on the Mac. Tap Pair. Try `Hello Nova`, `Mac status`, and `Repo status`; open each job to see its result and event history.
 
-The iPhone app is **not compiled in the Node tests**. Swift source has been syntax-parsed on the Mac, and the Xcode project has been generated and plist-validated. Full iOS compilation requires Xcode and its iOS platform; device installation additionally requires signing. Do not call this tested end-to-end until the native app pairs and receives a Mac result on the phone. HTTP redirects are rejected, and authenticated requests use the saved paired server address to avoid forwarding credentials to a changed address.
+The iPhone app is **not compiled in the Node tests**. Full unsigned and device-signed iOS builds have now succeeded on Matthew's Mac, and the app has been installed on his connected iPhone 13. Do not call this tested end-to-end until the native app pairs and receives a Mac result on the phone. HTTP redirects are rejected, and authenticated requests use the saved paired server address to avoid forwarding credentials to a changed address.
+
+For local setup, Debug builds accept `NOVA_SETUP_URL` and `NOVA_SETUP_CODE` in their launch environment to prefill pairing on an unpaired phone. They still require a tap on Pair Nova, validate the HTTPS URL normally, and redeem a normal ten-minute, one-use invitation. These inputs are not saved until successful pairing and are ignored by Release builds. Never print or commit the pairing code; supply it through the developer launch environment, not a source change.
 
 ## Verification on Matthew's Mac — 2026-10-16
 
@@ -79,8 +83,8 @@ The iPhone app is **not compiled in the Node tests**. Swift source has been synt
 - Node 24.19.0; nine backend tests pass, including actual database reopen, expired/reused pairing, cross-device isolation, revocation, shutdown, failed duplicate listener, loopback binding, and repository hook suppression.
 - Installed Core as a user login service and exercised real `hello`, `mac.status`, and `repo.status` HTTP jobs. Verified automatic restart after SIGTERM, persisted credentials/results/stop flag, local resume, and test-device revocation. No test credential was retained.
 - Repository status disables fsmonitor hooks and optional index writes, and skips submodule traversal. See [Git's status documentation](https://git-scm.com/docs/git-status) for why the default command can refresh the index and invoke fsmonitor.
-- Tailscale 1.104.1 installed from its official package server; checksum and notarized signature verified. Network extension activated. Account login and private HTTPS Serve configuration still pending at this checkpoint.
-- Native iOS project generated with XcodeGen 2.46.0; shared scheme/workspace XML validated. `NovaModel.swift` passes `swiftc -typecheck` against the Mac SDK, which checks the networking/model code but is not an iOS build. Full Xcode, signing, connected-device installation, and phone-to-Mac pairing remain pending at this checkpoint. The face is a static placeholder; voice, animated companion, AI planning, and computer control are not implemented.
+- Tailscale 1.104.1 installed from its official package server; checksum and notarized signature verified. Network extension activated, account signed in, and Mac confirmed online. User-approved HTTPS Serve is running persistently with no Funnel configuration. Tested valid TLS, unauthenticated rejection, pairing, and a Mac status job via the private HTTPS address from the Mac. This does not prove phone/cellular connectivity. The test credential was revoked.
+- Native iOS project generated with XcodeGen 2.46.0; shared scheme/workspace XML validated. Xcode 26.6 (17F113) and iOS development components installed; Apple agreement accepted with user consent. Unsigned and Personal Team signed iOS builds succeeded. Fixed missing version metadata, selected iPhone-only device family at target scope, and generated launch-screen/scene configuration. The signed 0.1.0 (1) app installed and launched on the trusted iPhone 13 running iOS 18.7.8. Signature and device provisioning verified. The first phone pairing attempt timed out; Core received no request, and device diagnostics confirmed Tailscale was not installed on that phone. Phone VPN setup and end-to-end pairing are pending at this checkpoint. Network failures now explain the Tailscale/Core connection checks. The face is a static placeholder; voice, animated companion, AI planning, and computer control are not implemented.
 
 ## Emergency stop and recover
 

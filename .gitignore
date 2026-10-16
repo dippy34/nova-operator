@@ -6,3 +6,4 @@ node_modules/
 *.xcodeproj/xcuserdata/
 ios/NovaApp/Info.plist
 .DerivedData/
+ios/Signing.local.xcconfig

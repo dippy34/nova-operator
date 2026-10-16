@@ -1,0 +1,2 @@
+// Personal signing details belong in the ignored local file, not in Git.
+#include? "Signing.local.xcconfig"

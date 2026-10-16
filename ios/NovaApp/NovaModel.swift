@@ -94,6 +94,18 @@ final class NovaModel: ObservableObject {
 
     var paired: Bool { KeychainToken.read() != nil }
 
+    init() {
+        #if DEBUG
+        // Local device setup can prefill a short-lived invitation without logging it.
+        // Pairing still requires the user to tap Pair in the native app.
+        let setup = ProcessInfo.processInfo.environment
+        if !paired, let url = setup["NOVA_SETUP_URL"], let code = setup["NOVA_SETUP_CODE"] {
+            address = url
+            pairingCode = code
+        }
+        #endif
+    }
+
     private func baseURL() throws -> URL {
         let savedAddress = UserDefaults.standard.string(forKey: "nova.baseURL")
         let selectedAddress = paired ? (savedAddress ?? "") : address
@@ -119,7 +131,17 @@ final class NovaModel: ObservableObject {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let (data, response) = try await session.data(for: req)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: req)
+        } catch let error as URLError {
+            if [.timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+                .networkConnectionLost, .notConnectedToInternet].contains(error.code) {
+                throw NovaError.server("Could not reach your Mac. Check that Tailscale is connected with the same account on both devices, and that Nova Core is running on the Mac.")
+            }
+            throw error
+        }
         guard let response = response as? HTTPURLResponse else { throw NovaError.server("Invalid response") }
         guard (200...299).contains(response.statusCode) else {
             let apiError = try? JSONDecoder().decode(APIError.self, from: data)
