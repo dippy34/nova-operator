@@ -19,7 +19,7 @@ struct NovaFace: View {
 
 struct ContentView: View {
     @EnvironmentObject private var nova: NovaModel
-    @State private var message = "Hello Nova!"
+    @State private var message = ""
     @State private var showStopConfirmation = false
     var body: some View {
         NavigationStack {
@@ -73,14 +73,37 @@ struct ContentView: View {
 
     private var connected: some View {
         VStack(alignment:.leading,spacing:16) {
+            Text("Talk to Nova").font(.title2.bold())
+            Text("Chat with Claude. Messages and a few recent replies are sent to Anthropic. Computer control is not enabled yet.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let ai = nova.ai {
+                Text(String(format:"Nova AI allowance: $%.4f used of $%.2f",ai.usedUSD,ai.allowanceUSD))
+                    .font(.caption).foregroundStyle(.secondary)
+                if !ai.configured { Text("Add your Claude API key on the Mac to enable chat.").foregroundStyle(.orange) }
+            }
+            if let chat = nova.chat {
+                if let question = chat.payload["message"] { Text(question.description).font(.subheadline).foregroundStyle(.cyan) }
+                if let reply = chat.result?["message"] {
+                    Text(reply.description).textSelection(.enabled)
+                    if let cost = chat.result?["estimatedUSD"] {
+                        Text("Estimated cost: $\(cost.description)").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if chat.result?["truncated"]?.description == "true" { Text("Reply shortened to stay within the limit.").font(.caption).foregroundStyle(.secondary) }
+                } else if let error = chat.error { Text(error).foregroundStyle(.orange) }
+                else if ["queued","running"].contains(chat.status) { ProgressView("Nova is thinking…") }
+                else { Text("Message \(chat.status)").foregroundStyle(.secondary) }
+            }
+            HStack {
+                TextField("Message Nova",text:$message,axis:.vertical).lineLimit(1...5).textFieldStyle(.roundedBorder)
+                Button { Task { if await nova.submit("ai.chat",message:message) { message = "" } } } label: {
+                    Image(systemName:"arrow.up.circle.fill").font(.title2)
+                }.accessibilityLabel("Send message")
+                    .disabled(nova.busy || nova.stopped || nova.ai?.configured != true || nova.ai?.busy == true || message.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || message.count > 2000)
+            }
+            Divider()
             Text("Safe tasks").font(.title2.bold())
             Text("This first version runs real read-only Mac checks. AI control and GUI access aren't enabled yet.")
                 .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                TextField("Say something to Nova",text:$message).textFieldStyle(.roundedBorder)
-                Button {Task {await nova.submit("hello",message:message)}} label:{Image(systemName:"arrow.up.circle.fill").font(.title2)}
-                    .disabled(nova.busy || nova.stopped)
-            }
             HStack {
                 Button("Mac status") {Task {await nova.submit("mac.status")}}
                 Button("Repo status") {Task {await nova.submit("repo.status")}}

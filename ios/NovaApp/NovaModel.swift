@@ -7,6 +7,14 @@ struct NovaStatus: Decodable {
     let stopped: Bool
     let device: String
     let capabilities: [String]
+    let ai: NovaAIStatus?
+}
+struct NovaAIStatus: Decodable {
+    let configured: Bool
+    let model: String
+    let usedUSD: Double
+    let allowanceUSD: Double
+    let busy: Bool
 }
 struct NovaJob: Decodable, Identifiable {
     let id: String
@@ -27,6 +35,7 @@ struct NovaDetail: Decodable {
     let status: String
     let error: String?
     let result: [String: JSONValue]?
+    let payload: [String: JSONValue]
     let events: [NovaEvent]
 }
 enum JSONValue: Decodable, CustomStringConvertible {
@@ -91,6 +100,8 @@ final class NovaModel: ObservableObject {
     @Published var jobs: [NovaJob] = []
     @Published var busy = false
     @Published var errorMessage: String?
+    @Published var ai: NovaAIStatus?
+    @Published var chat: NovaDetail?
 
     var paired: Bool { KeychainToken.read() != nil }
 
@@ -169,6 +180,10 @@ final class NovaModel: ObservableObject {
             let status: NovaStatus = try await request("/v1/status")
             let list: JobsResponse = try await request("/v1/jobs")
             jobs = list.jobs; stopped = status.stopped; connection = stopped ? "Emergency stopped" : "Mac connected"
+            ai = status.ai
+            if let latest = jobs.first(where: { $0.type == "ai.chat" }) {
+                chat = try await request("/v1/jobs/\(latest.id)")
+            }
             errorMessage = nil
         } catch {
             connection = "Mac offline or unreachable"
@@ -176,13 +191,16 @@ final class NovaModel: ObservableObject {
         }
     }
 
-    func submit(_ type: String, message: String = "") async {
+    @discardableResult
+    func submit(_ type: String, message: String = "") async -> Bool {
+        guard !busy else { return false }
         busy = true; errorMessage = nil
         defer { busy = false }
         do {
             let _: CreatedJob = try await request("/v1/jobs", method: "POST", body: ["type":type, "message":message])
             await refresh()
-        } catch { errorMessage = error.localizedDescription }
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
     }
 
     func detail(_ id: String) async -> NovaDetail? {
@@ -200,7 +218,7 @@ final class NovaModel: ObservableObject {
     }
 
     func unpair() {
-        KeychainToken.clear(); jobs = []; connection = "Not connected"; errorMessage = nil
+        KeychainToken.clear(); jobs = []; chat = nil; ai = nil; connection = "Not connected"; errorMessage = nil
     }
 }
 

@@ -5,11 +5,12 @@ import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Store } from './db.mjs';
+import { createAI } from './ai.mjs';
 
 const execFileAsync = promisify(execFile);
 const defaultDb = resolve(process.env.NOVA_DB ?? './.nova-data/nova.sqlite');
 const MAX_BODY = 8192;
-const types = new Set(['hello', 'mac.status', 'repo.status']);
+const types = new Set(['hello', 'mac.status', 'repo.status', 'ai.chat']);
 const json = (res, status, object) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   res.end(JSON.stringify(object));
@@ -29,8 +30,9 @@ function cleanMessage(message) {
   return message.trim();
 }
 
-export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORKSPACE, executeOverride } = {}) {
+export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORKSPACE, executeOverride, aiOptions } = {}) {
   const store = new Store(dbFile);
+  const ai = createAI(store, aiOptions);
   let server;
   let closing = false, closePromise;
   const active = new Map();
@@ -46,12 +48,14 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
     }
     throw new Error('Unknown safe task type');
   });
-  const runJob = async (id, type, payload) => {
+  const runJob = async (id, type, payload, deviceId) => {
     if (closing || store.stopped()) { store.updateJob(id, 'cancelled'); return; }
     const controller = new AbortController(); active.set(id, controller);
     store.updateJob(id, 'running');
     try {
-      const result = await execute(type, payload, controller.signal);
+      const result = type === 'ai.chat'
+        ? await ai.chat(id, deviceId, payload.message, controller.signal)
+        : await execute(type, payload, controller.signal);
       if (controller.signal.aborted || store.stopped()) store.updateJob(id, 'cancelled');
       else store.updateJob(id, 'succeeded', result);
     } catch (error) { store.updateJob(id, controller.signal.aborted ? 'cancelled' : 'failed', null, String(error.message).slice(0,250)); }
@@ -71,15 +75,16 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
       const authorization = req.headers.authorization ?? '';
       const device = authorization.startsWith('Bearer ') ? store.auth(authorization.slice(7)) : null;
       if (!device) return json(res, 401, { error:'Pair this iPhone before accessing Nova' });
-      if (req.method === 'GET' && url.pathname === '/v1/status') return json(res,200,{connected:true,stopped:store.stopped(),device:device.name,capabilities:[...types]});
+      if (req.method === 'GET' && url.pathname === '/v1/status') return json(res,200,{connected:true,stopped:store.stopped(),device:device.name,capabilities:[...types],ai:ai.status()});
       if (req.method === 'GET' && url.pathname === '/v1/jobs') return json(res,200,{jobs:store.jobs(device.id)});
       if (req.method === 'POST' && url.pathname === '/v1/jobs') {
         if (store.stopped()) return json(res,423,{error:'Nova is stopped. Resume locally on Mac.'});
         const body = await readJson(req);
-        if (!body || !types.has(body.type)) return json(res,400,{error:'Only known read-only task types are supported in v0.1'});
-        const payload = { message: body.type === 'hello' ? cleanMessage(body.message ?? '') : '' };
+        if (!body || !types.has(body.type)) return json(res,400,{error:'Only known safe task types are supported'});
+        if (body.type === 'ai.chat' && (typeof body.message !== 'string' || !body.message.trim() || body.message.length > 2000)) return json(res,400,{error:'AI messages must contain 1–2000 characters'});
+        const payload = { message: body.type === 'ai.chat' ? body.message.trim() : body.type === 'hello' ? cleanMessage(body.message ?? '') : '' };
         const id = store.createJob(device.id, body.type, payload);
-        const task = new Promise(ok => setImmediate(ok)).then(() => runJob(id, body.type, payload));
+        const task = new Promise(ok => setImmediate(ok)).then(() => runJob(id, body.type, payload, device.id));
         pending.add(task);
         void task.finally(() => pending.delete(task));
         return json(res,202,{id,status:'queued'});
@@ -122,7 +127,7 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const app = makeNova();
   const port = await app.listen(Number(process.env.NOVA_PORT ?? 8787));
-  console.log(`Nova Core v0.1 listening on http://127.0.0.1:${port} (safe read-only tasks only)`);
+  console.log(`Nova Core v0.1 listening on http://127.0.0.1:${port} (safe checks and text-only AI; no model tools)`);
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal,()=>{void app.close().then(()=>process.exit(0));});
   }

@@ -32,6 +32,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS events(
         id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT, kind TEXT NOT NULL,
         description TEXT NOT NULL, created_at TEXT NOT NULL);`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS ai_usage(
+      job_id TEXT PRIMARY KEY, amount_micros INTEGER NOT NULL, confirmed INTEGER NOT NULL DEFAULT 0);`);
     this.db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES('stopped','0')").run();
 
   }
@@ -40,6 +42,22 @@ export class Store {
     this.db.prepare("UPDATE jobs SET status='interrupted',error='Core restarted before outcome was confirmed',updated_at=? WHERE status IN ('running','queued')").run(now());
   }
   close() { this.db.close(); }
+  aiSpent() { return this.db.prepare('SELECT COALESCE(SUM(amount_micros),0) AS amount FROM ai_usage').get().amount; }
+  reserveAI(id, amount, cap) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (this.aiSpent() + amount > cap) { this.db.exec('ROLLBACK'); return false; }
+      this.db.prepare('INSERT INTO ai_usage(job_id,amount_micros) VALUES(?,?)').run(id,amount);
+      this.db.exec('COMMIT'); return true;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  settleAI(id, amount) { this.db.prepare('UPDATE ai_usage SET amount_micros=?,confirmed=1 WHERE job_id=?').run(amount,id); }
+  aiHistory(deviceId) {
+    const rows = this.db.prepare("SELECT payload,result FROM jobs WHERE device_id=? AND type='ai.chat' AND status='succeeded' ORDER BY rowid DESC LIMIT 2").all(deviceId).reverse();
+    // Bounded, per-device context only. Repository contents and unrelated jobs are never sent.
+    return rows.flatMap(row => [{role:'user',content:JSON.parse(row.payload).message.slice(0,1000)},
+      {role:'assistant',content:JSON.parse(row.result).message.slice(0,1500)}]);
+  }
   issueInvitation() {
     const code = random(18); // 144 bits of random pairing entropy
     this.db.prepare('INSERT INTO invitations(code_hash,expires_ms) VALUES(?,?)').run(hash(code), Date.now() + 10 * 60_000);

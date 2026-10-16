@@ -7,3 +7,5 @@ node_modules/
 ios/NovaApp/Info.plist
 .DerivedData/
 ios/Signing.local.xcconfig
+
+.env.local

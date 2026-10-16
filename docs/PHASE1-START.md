@@ -4,6 +4,8 @@ This is an **implementation**, not an architectural mockup. It has a native iOS 
 
 ## Implemented / not implemented
 
+**Claude chat addition:** The native client and Core now include bounded text-only Claude conversation. See [Claude setup and cost controls](CLAUDE-SETUP.md). The signed update built and installed on Matthew's iPhone, and all 15 backend tests passed. A real authenticated job through running Core returned a Haiku 5.5 reply using 156 input / 18 output tokens (estimated $0.000025). Its temporary setup credential was revoked. Remote launch of the updated app was blocked because the iPhone was locked; the new phone chat flow still needs a user check. This does not enable AI planning or computer control.
+
 | Today (v0.1) | Future phases |
 | --- | --- |
 | iPhone app pairs over HTTPS via Tailscale Serve; creates `hello`, `mac.status` and configured `repo.status` jobs | GPT/Claude planning, arbitrary tool calls, GUI operation, wake word |
@@ -11,7 +13,7 @@ This is an **implementation**, not an architectural mockup. It has a native iOS 
 | Emergency stop, local-only resume | Enforced agent process/network isolation, Codex/Claude SDKs, dynamic task graph |
 | Job history and details in app | APNs, push approvals, background event delivery, remote wake |
 
-**Security limitation:** v0.1 uses a Keychain-stored bearer token via TLS/Tailscale. This is **not** the long-term per-action signed-grant security protocol. For that reason only a hardcoded **read-only task allowlist** is enabled, with no shell command input, no user-selected file paths, no desktop control, and no arbitrary agent execution. Do not expose the Node server with Tailscale Funnel or public port forwarding.
+**Security limitation:** v0.1 uses a Keychain-stored bearer token via TLS/Tailscale. This is **not** the long-term per-action signed-grant security protocol. Only hardcoded read-only checks and bounded text-only chat are enabled, with no shell command input, no user-selected file paths, no desktop control, and no arbitrary agent execution. Model replies are displayed, never executed. Do not expose the Node server with Tailscale Funnel or public port forwarding.
 
 ## On your Mac
 
