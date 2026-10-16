@@ -1,0 +1,14 @@
+{
+  "name": "nova-operator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Nova Phase 1 safe vertical slice: Mac core + native iPhone client",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node core/server.mjs",
+    "pair": "node core/cli.mjs pair",
+    "resume": "node core/cli.mjs resume",
+    "test": "node --test core/*.test.mjs"
+  }
+}

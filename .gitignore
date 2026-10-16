@@ -1,0 +1,9 @@
+node_modules/
+.nova-data/
+.DS_Store
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+ios/Nova.xcodeproj/
+ios/NovaApp/Info.plist
+.DerivedData/

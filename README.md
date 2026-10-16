@@ -6,7 +6,9 @@ The core idea is **preauthorized autonomy**: before leaving, you grant Nova spec
 
 ## Status
 
-**Design phase. No implementation code yet.** This repo is where Matthew, Claude, and ChatGPT work out the architecture before Phase 1 starts.
+**Phase 1 implementation started (2026-10-16).** Nova now has a tested, read-only Mac-side prototype and native SwiftUI iPhone source. This is **not** full autonomous computer control; privileged actions remain disabled until authentication, sandboxing and policy enforcement are built and tested.
+
+**Start here:** [Phase 1 installation and testing guide](docs/PHASE1-START.md). The native app is under `ios/`, and Mac Core under `core/`.
 
 ## Where things are
 
@@ -24,4 +26,4 @@ The core idea is **preauthorized autonomy**: before leaving, you grant Nova spec
 
 ## How to contribute
 
-Read [`AGENTS.md`](AGENTS.md) first. In short: work on a branch, open a pull request, log your change in `CHANGELOG.md`, and record any disagreement explicitly instead of silently rewriting someone else's reasoning.
+Read [`AGENTS.md`](AGENTS.md) first. Use branches and pull requests for normal collaboration unless Matthew explicitly requests direct-to-main changes. Never claim untested security boundaries or enable high-impact unattended tools.

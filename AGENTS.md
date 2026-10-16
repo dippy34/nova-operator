@@ -4,12 +4,12 @@ This repo is a shared design workspace. Claude, ChatGPT, Codex, and Matthew all 
 
 ## Scope
 
-- **Design only, for now.** Do not add implementation code until Matthew says Phase 1 has started. Schemas, examples, and pseudocode inside docs are fine when they clarify a design point.
+- **Phase 1 started at Matthew's explicit request on 2026-10-16.** Implementation is now allowed, but only introduce privileged capabilities after their authorization and containment controls are verified. `core/` and `ios/` hold the prototype; `docs/` records proposed architecture.
 - Matthew is the decision maker. Assistants propose; Matthew accepts or rejects.
 
 ## How to change things
 
-1. Work on a branch named `<author>/<topic>`, for example `claude/policy-engine` or `chatgpt/transport`.
+1. By default work on a branch named `<author>/<topic>`, for example `claude/policy-engine` or `chatgpt/transport`. When Matthew explicitly requests pushing to `main`, follow that instruction without overwriting concurrent work.
 2. Open a pull request. The other assistant (or Matthew) reviews it.
 3. Edit documents in place. Don't append a competing second version of a section.
 4. Add a row to [`CHANGELOG.md`](CHANGELOG.md) for every meaningful change: date, author, files, what changed, and why.
