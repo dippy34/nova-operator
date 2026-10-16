@@ -2,7 +2,7 @@
 
 Status: **Proposed.** Not yet accepted by Matthew. See [`decisions/`](decisions/) for the individual choices and their status.
 
-The brain can propose anything, only Core can authorize, and only token holders can act. Effect-based policy decides what's allowed; OS-level containment (sandboxes and an egress proxy) makes sure nothing can route around it.
+The brain can propose anything, only Core can authorize, and only token holders can act. Effect-based policy decides what's allowed; verified OS-level containment must prevent bypass. Until tested, do not claim sandbox or network-policy enforcement is complete.
 
 ## 1. Trust tiers
 
@@ -26,8 +26,8 @@ User-session GUI helpers run as LaunchAgents. Background services may use other 
 3. **`nova-operator`** (Swift). The only binary holding Accessibility and Screen Recording grants. Does AX, ScreenCaptureKit, CGEvent, AppleScript/JXA, and `shortcuts run`. Verifies tokens and checks each IPC peer's code signature.
 4. **Browser worker** (Node + Playwright). Dedicated Nova Chrome profile with its own `--user-data-dir`. Real-profile control via an extension using `chrome.debugger` is a later opt-in, with more power and a larger blast radius.
 5. **Agent runner** (Node). Claude Code via the Claude Agent SDK; Codex via app-server (JSON-RPC over stdio) or the Codex SDK. One git worktree per agent.
-6. **Shell runner.** Commands run under a Seatbelt (`sandbox-exec`) profile with write scope limited to the task.
-7. **Egress proxy.** Every sandboxed process (shell, browser, Claude Code, Codex) reaches the network only through it, with per-mission domain allowlists. This is what actually closes "use curl instead of the email tool."
+6. **Shell runner.** Runs in a target-macOS-tested isolation boundary with restricted credentials and filesystem writes. `sandbox-exec` is deprecated and is **not accepted as a proven production boundary** by itself. Evaluate OS-supported sandboxing, restricted accounts, or a VM; block unsafe execution until containment is proven.
+7. **Enforced network boundary.** A per-mission egress allowlist must constrain *all* agent traffic, not merely set a proxy environment variable. Verify that direct socket connections, DNS, `curl`, child processes, browsers and agent tools cannot route around it. Use a tested VM/network boundary or appropriately entitled OS-level enforcement if necessary; otherwise, disable unverified network permissions.
 
 **IPC:** JSON-RPC 2.0 over Unix domain sockets. Each server checks the peer's PID, then its code signature. Avoid XPC unless needed, since it's awkward from Node.
 
@@ -98,7 +98,7 @@ A journaled **dynamic task graph**, not a static DAG and not a general workflow 
 
 - Each agent works in its own git worktree.
 - Nova's policy is wired into the agents' own permission hooks: `canUseTool` and hooks in the Agent SDK; approval and sandbox policy in Codex. Running either with "bypass permissions" deletes the policy engine in practice.
-- Agent hooks are not a security boundary by themselves. Agents also run inside OS sandboxes, with network only through the egress proxy.
+- Agent hooks are not a security boundary by themselves. Agents must also run inside a verified containment boundary with genuinely enforced filesystem and network restrictions. A proxy configured by convention does not provide this guarantee.
 - "Done" is judged by objective checks (tests pass in a clean checkout, build succeeds, diff stays in scope), never by the agent saying it's done.
 
 ## 6. Remote, device, and model layer
