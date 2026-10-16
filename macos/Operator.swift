@@ -62,6 +62,18 @@ func current(_ app: String) async throws -> (NSRunningApplication, SCWindow, Str
     return (front,window,sha(Data(state.utf8)))
 }
 
+func pressable(_ element: AXUIElement) -> AXUIElement? {
+    var current: AXUIElement? = element
+    for _ in 0..<3 {
+        guard let candidate=current else { return nil }
+        var names: CFArray?
+        if AXUIElementCopyActionNames(candidate,&names) == .success, (names as? [String] ?? []).contains(kAXPressAction) { return candidate }
+        guard let parent=attr(candidate,kAXParentAttribute), CFGetTypeID(parent) == AXUIElementGetTypeID() else { return nil }
+        current=unsafeBitCast(parent,to:AXUIElement.self)
+    }
+    return nil
+}
+
 func validate(_ request: [String:Any]) throws {
     guard let kind = request["kind"] as? String, ["activate","observe","click","type","key","scroll"].contains(kind),
           let app = request["app"] as? String, apps[app] != nil else { try deny("Unknown operation or app") }
@@ -117,8 +129,12 @@ func perform(_ request: [String:Any]) async throws -> [String:Any] {
         guard AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(),Float(point.x),Float(point.y),&hit) == .success, let hit else { try deny("Cannot identify the click target") }
         var hitPid:pid_t=0; AXUIElementGetPid(hit,&hitPid)
         guard hitPid == front.processIdentifier else { try deny("Another app covers the target") }
-        if kind == "click" {
-            for type in [CGEventType.leftMouseDown,.leftMouseUp] { let event=CGEvent(mouseEventSource:nil,mouseType:type,mouseCursorPosition:point,mouseButton:.left);event?.flags=[];event?.postToPid(front.processIdentifier) }
+        // Many apps (including SwiftUI ones like Calculator) ignore mouse events posted
+        // to their PID, so press the control through Accessibility when it supports it.
+        if kind == "click", let control=pressable(hit) {
+            guard AXUIElementPerformAction(control,kAXPressAction as CFString) == .success else { try deny("The control did not accept the click") }
+        } else if kind == "click" {
+            for type in [CGEventType.leftMouseDown,.leftMouseUp] { let event=CGEvent(mouseEventSource:nil,mouseType:type,mouseCursorPosition:point,mouseButton:.left);event?.flags=[];event?.setIntegerValueField(.mouseEventClickState,value:1);event?.postToPid(front.processIdentifier) }
         } else {
             let event=CGEvent(scrollWheelEvent2Source:nil,units:.pixel,wheelCount:1,wheel1:request["direction"] as? String == "up" ? 300 : -300,wheel2:0,wheel3:0)
             event?.flags=[];event?.location=point; event?.postToPid(front.processIdentifier)
