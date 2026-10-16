@@ -8,12 +8,17 @@ Retries of side-effecting actions are never sent straight back to an executor. K
 flowchart TD
   A["Brain proposes ToolRequest"] --> B{"Schema valid?<br/>Capability in grant?"}
   B -- No --> BX["Reject and journal reason"]
+  BX --> A
   B -- Yes --> C["Select verifiable adapter<br/>API / SDK / CLI / script / DOM / AX / vision"]
   C --> D["Adapter describes concrete action<br/>target, effects, conditions, provenance"]
   D --> E{"Can effect and boundary<br/>be enforced?"}
   E -- No --> EH["Deny or request narrower<br/>scoped execution method"]
+  EH --> A
+  E -- "GUI target unidentifiable by AX" --> E2["Classify as gui.opaque app<br/>bounded by app-level grant"]
+  E2 --> F
   E -- Yes --> F["Deterministic policy evaluation<br/>grant + effect + provenance + budgets"]
   F -- Deny --> G["Journal denial; close effect<br/>within current mission"]
+  G --> A
   F -- Needs approval --> H["Journal blocked action and<br/>exact descriptor hash"]
   H --> HA["Run independent ready nodes;<br/>keep descendants blocked"]
   H --> I["Notify owner via APNs"]
@@ -59,3 +64,5 @@ flowchart TD
 5. A postcondition failure is not automatically proof an action failed. Especially for sends, pushes, purchases, and deletes, an uncertain outcome requires a read-back/reconcile probe or human resolution.
 6. A policy deny closes an **effect**, not every alternative implementation of a permitted goal. An out-of-scope effect cannot be retried via another tool.
 7. The graph shows the logical protocol, not proof of macOS process or network containment; enforcement must pass the tests in the roadmap.
+8. `gui.opaque(app)` is enforceable only at app scope: policy allows it solely under an explicit per-app `full-control` grant, and denies it everywhere else (see ADR 0002).
+9. Every rejection or denial returns to the Brain with the reason, so it re-plans instead of stalling or probing alternate routes to a closed effect.

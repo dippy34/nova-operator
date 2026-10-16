@@ -9,6 +9,7 @@ One file per significant architectural choice. Statuses: `Proposed`, `Accepted`,
 | [0003](0003-tailscale-transport.md) | Tailscale for v1 transport instead of a custom gateway | Proposed |
 | [0004](0004-dynamic-task-graph.md) | Journaled dynamic task graph instead of a DAG engine | Proposed |
 | [0005](0005-low-trust-desk-companion.md) | Desk companion is a low-trust device that can never approve | Proposed |
+| [0006](0006-pinned-target-taint-policy.md) | Pinned-target taint policy: tainted contexts need approval only for unpinned targets | Proposed |
 
 ## Template
 

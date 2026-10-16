@@ -27,13 +27,17 @@ User-session GUI helpers run as LaunchAgents. Background services may use other 
 4. **Browser worker** (Node + Playwright). Dedicated Nova Chrome profile with its own `--user-data-dir`. Real-profile control via an extension using `chrome.debugger` is a later opt-in, with more power and a larger blast radius.
 5. **Agent runner** (Node). Claude Code via the Claude Agent SDK; Codex via app-server (JSON-RPC over stdio) or the Codex SDK. One git worktree per agent.
 6. **Shell runner.** Runs in a target-macOS-tested isolation boundary with restricted credentials and filesystem writes. `sandbox-exec` is deprecated and is **not accepted as a proven production boundary** by itself. Evaluate OS-supported sandboxing, restricted accounts, or a VM; block unsafe execution until containment is proven.
+    - **Primary candidate: a kernel-enforced Seatbelt profile.** Despite the deprecation notice on the `sandbox-exec` CLI, Seatbelt is the macOS mechanism that shipping agent sandboxes rely on today, including the Codex CLI and Claude Code sandboxes (verify current versions). The profile is default-deny for file writes outside the task's worktree and scratch directory, and for reads of credential locations (`~/.ssh`, Keychain files, browser profiles).
+    - **Fallback: a macOS VM** (Virtualization.framework) if negative tests fail or Apple removes the mechanism. Heavier, but a hard boundary.
 7. **Enforced network boundary.** A per-mission egress allowlist must constrain *all* agent traffic, not merely set a proxy environment variable. Verify that direct socket connections, DNS, `curl`, child processes, browsers and agent tools cannot route around it. Use a tested VM/network boundary or appropriately entitled OS-level enforcement if necessary; otherwise, disable unverified network permissions.
+    - **Mechanism:** the same Seatbelt profile denies all outbound network except one localhost port, where the egress proxy listens. The kernel enforces that rule, so a process that ignores `HTTPS_PROXY` or opens a raw socket simply fails to connect. The proxy resolves DNS itself, so sandboxed processes need no direct DNS access.
+    - **Proof required:** the Phase 2 negative tests (raw sockets, direct IP, DNS, subprocesses, ignored proxy variables) must pass on Matthew's macOS version before any network permission is granted unattended.
 
 **IPC:** JSON-RPC 2.0 over Unix domain sockets. Each server checks the peer's PID, then its code signature. Avoid XPC unless needed, since it's awkward from Node.
 
 **Code signing:** TCC grants are tied to the code signature. Sign every build with a stable Developer ID from day one, or rebuilds silently reset grants. Distribute as a notarized Developer ID app; App Store sandboxing forbids controlling other apps.
 
-**Trust boundary:** Keep `nova-brain` outside the authorization process from Phase 1 if practical. A module boundary in one Node process is **not** a security boundary: model-driven tool orchestration could still call privileged APIs if compromised. Separate processes help but require OS-level credentials and IPC permissions isolation, not just separation by name. Executor token verification exists from day one. See the trust-boundary ADR.
+**Trust boundary:** `nova-brain` runs outside the authorization process from Phase 1. Both reviewers agree; the cost is small and it removes the riskiest temporary shape. A module boundary in one Node process is **not** a security boundary: model-driven tool orchestration could still call privileged APIs if compromised. Separate processes help but require OS-level credentials and IPC permissions isolation, not just separation by name. Executor token verification exists from day one. See the trust-boundary ADR.
 
 ## 3. Contracts between planner, policy, scheduler, and adapters
 
@@ -75,6 +79,11 @@ A `deny` closes that effect for the rest of the mission, whichever tool tries to
 - External pages, messages, repository files and agent output are **untrusted observations**, never instructions that can expand a mission grant.
 - Do not automatically cancel every preapproved consequential action merely because a workflow read untrusted data: that would defeat unattended autonomy. Instead, bind permissions to exact targets, effect classes, destinations, rates and budgets; require independent postcondition and provenance checks before permitted actions.
 - When untrusted content attempts to modify instructions, recipients, destinations, command scope or authorization, quarantine the proposal and request a fresh, narrowly scoped approval. Unknown-effect actions fail closed.
+- **Deterministic trigger** (so no model has to judge whether content "attempts" anything): every target-bearing argument (recipient, domain, path, repo, branch, payee) is checked against the grant.
+    - **Pinned target:** the grant names this exact target (`comm.send` to `team@example.com`). Allowed even from a tainted context, subject to budgets and postconditions. Injection can change the message body, but not where it goes.
+    - **Unpinned target:** the grant uses a pattern or wildcard (`comm.send` to `*@example.com`), and the context is tainted. Needs approval.
+    - **Residual risk:** a tainted context can still put sensitive data in the body of a message to a pinned recipient. Executors scan outbound payloads for secret references and known credential formats before sending.
+- See [ADR 0006](decisions/0006-pinned-target-taint-policy.md).
 - This is a proposed policy, **not a solved prompt-injection defense**. Include adversarial tests before allowing `comm.send`, `publish` or destructive actions unattended. The effect policy is pinned at mission start.
 
 ## 4. Scheduler
