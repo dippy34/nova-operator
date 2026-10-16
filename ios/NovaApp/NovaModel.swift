@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 import Security
 import AVFoundation
 import Speech
@@ -260,6 +261,19 @@ final class NovaModel: ObservableObject {
         catch { errorMessage = error.localizedDescription }
     }
 
+    /// Tap once to listen, tap again to send. Tapping while Nova talks interrupts it and listens.
+    func tapFace() async {
+        if listener.listening {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            await toggleListening()
+        } else if working {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        } else {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            await toggleListening()
+        }
+    }
+
     func toggleListening() async {
         if listener.listening {
             let text = await listener.stop().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -340,6 +354,7 @@ final class Speaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
 final class Listener: ObservableObject {
     @Published var listening = false
     @Published var transcript = ""
+    @Published var level: CGFloat = 0
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private let engine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -357,7 +372,11 @@ final class Listener: ObservableObject {
         request.shouldReportPartialResults = true
         if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
         let input = engine.inputNode
-        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in request.append(buffer) }
+        input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
+            request.append(buffer)
+            let level = Listener.loudness(buffer)
+            Task { @MainActor in self?.level = level }
+        }
         engine.prepare()
         try engine.start()
         transcript = ""
@@ -369,6 +388,15 @@ final class Listener: ObservableObject {
         listening = true
     }
 
+    /// Microphone loudness mapped from about -50…-10 dBFS to 0…1.
+    nonisolated static func loudness(_ buffer: AVAudioPCMBuffer) -> CGFloat {
+        guard let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return 0 }
+        var sum: Float = 0
+        for i in 0..<Int(buffer.frameLength) { sum += samples[i] * samples[i] }
+        let decibels = 20 * log10(max(1e-7, (sum / Float(buffer.frameLength)).squareRoot()))
+        return CGFloat(min(1, max(0, (decibels + 50) / 40)))
+    }
+
     func stop() async -> String {
         guard listening else { return transcript }
         engine.stop()
@@ -377,6 +405,7 @@ final class Listener: ObservableObject {
         try? await Task.sleep(for: .milliseconds(600))
         task?.cancel(); task = nil; request = nil
         listening = false
+        level = 0
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         return transcript
     }

@@ -1,64 +1,112 @@
 import SwiftUI
 import UIKit
 
+enum FaceMood { case idle, listening, working, speaking }
+
 struct NovaFace: View {
-    var listening = false
-    var working = false
-    var speaking = false
-    @State private var pulse = false
-    private var color: Color { listening ? .pink : working ? .orange : .cyan }
+    var mood: FaceMood
+    @State private var blink = false
+    private var color: Color {
+        switch mood { case .idle: .cyan; case .listening: Color(red:0.85,green:0.5,blue:1); case .working: .orange; case .speaking: .mint }
+    }
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 32).fill(Color(red:0.075,green:0.105,blue:0.16))
-            VStack(spacing: 14) {
-                HStack(spacing: 38) {
-                    Capsule().fill(color).frame(width: 24,height: listening ? 48 : 42)
-                    Capsule().fill(color).frame(width: 24,height: listening ? 48 : 42)
+        TimelineView(.animation) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            let glance = mood == .working ? sin(t*2.2)*22 : 0
+            let bob = sin(t*1.6)*6
+            VStack(spacing: 46) {
+                HStack(spacing: 70) {
+                    eye(t: t).offset(x: glance)
+                    eye(t: t).offset(x: glance)
                 }
-                Image(systemName: speaking ? "waveform" : "mouth").font(.largeTitle).foregroundStyle(color)
-                    .symbolEffect(.variableColor.iterative, isActive: speaking)
+                mouth(t: t).frame(height: 40)
             }
-            .scaleEffect(pulse && (working || listening) ? 1.04 : 1)
+            .offset(y: bob)
+            .shadow(color: color.opacity(0.8), radius: 24)
         }
-        .frame(height: 182)
-        .animation(.easeInOut(duration: 0.25), value: color)
-        .onAppear { withAnimation(.easeInOut(duration: 0.8).repeatForever()) { pulse = true } }
-        .accessibilityLabel(listening ? "Nova is listening" : working ? "Nova is working" : speaking ? "Nova is speaking" : "Nova")
+        .animation(.spring(duration: 0.35), value: mood)
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Double.random(in: 2.5...5)))
+                withAnimation(.easeInOut(duration: 0.08)) { blink = true }
+                try? await Task.sleep(for: .milliseconds(110))
+                withAnimation(.easeInOut(duration: 0.1)) { blink = false }
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel(mood == .listening ? "Nova is listening. Tap to send." : mood == .working ? "Nova is working" : mood == .speaking ? "Nova is speaking" : "Nova. Tap to talk, press and hold for more.")
+    }
+    private func eye(t: Double) -> some View {
+        let height: CGFloat = blink ? 8 : mood == .listening ? 128 : 108
+        return Capsule().fill(color).frame(width: 58, height: height)
+    }
+    @ViewBuilder private func mouth(t: Double) -> some View {
+        if mood == .speaking || mood == .listening {
+            HStack(spacing: 7) {
+                ForEach(0..<7, id: \.self) { i in
+                    Capsule().fill(color)
+                        .frame(width: 9, height: mood == .speaking ? 10+abs(sin(t*9+Double(i)*0.9))*30 : 10+abs(sin(t*3+Double(i)*0.6))*10)
+                }
+            }
+        } else {
+            Capsule().fill(color.opacity(mood == .working ? 0.7 : 1)).frame(width: mood == .working ? 36 : 90, height: 10)
+        }
+    }
+}
+
+/// An animated glow around the screen's rounded edges, shown while Nova listens.
+struct EdgeGlow: View {
+    var level: CGFloat
+    private let shape = RoundedRectangle(cornerRadius: 47, style: .continuous)
+    var body: some View {
+        TimelineView(.animation) { context in
+            let angle = Angle.degrees(context.date.timeIntervalSinceReferenceDate * 80)
+            let gradient = AngularGradient(colors: [.cyan, .blue, .purple, .pink, .orange, .yellow, .cyan], center: .center, angle: angle)
+            ZStack {
+                shape.stroke(gradient, lineWidth: 5 + level*6)
+                shape.stroke(gradient, lineWidth: 14 + level*22).blur(radius: 12)
+                shape.stroke(gradient, lineWidth: 34 + level*44).blur(radius: 36).opacity(0.75)
+            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .animation(.easeOut(duration: 0.12), value: level)
     }
 }
 
 struct ContentView: View {
     @EnvironmentObject private var nova: NovaModel
-    @State private var message = ""
-    @State private var showStopConfirmation = false
     @ObservedObject private var listenerState: Listener
     @ObservedObject private var speakerState: Speaker
+    @State private var showPanel = false
     init(nova: NovaModel) { listenerState = nova.listener; speakerState = nova.speaker }
+
+    private var mood: FaceMood {
+        listenerState.listening ? .listening : nova.working ? .working : speakerState.speaking ? .speaking : .idle
+    }
+
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment:.leading, spacing:20) {
-                    NovaFace(listening: listenerState.listening, working: nova.working, speaking: speakerState.speaking)
-                    HStack(spacing:8) {
-                        Circle().fill(nova.connection == "Mac connected" ? .green : .orange).frame(width:9,height:9)
-                        Text(nova.paired ? nova.connection : "Pair your iPhone")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                    }
-                    if !nova.paired { pairing }
-                    else { connected }
-                }.padding()
+        ZStack {
+            Color(red:0.02,green:0.03,blue:0.06).ignoresSafeArea()
+            if nova.paired {
+                NovaFace(mood: mood)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture { Task { await nova.tapFace() } }
+                    .onLongPressGesture { showPanel = true }
+                if listenerState.listening {
+                    EdgeGlow(level: listenerState.level).transition(.opacity)
+                }
+            } else {
+                ScrollView { pairing.padding() }
             }
-            .background(Color(red:0.035,green:0.055,blue:0.09))
-            .navigationTitle("Nova")
-            .toolbar { if nova.paired { Button("Unpair") {nova.unpair()} } }
-            .navigationDestination(for: String.self) { JobDetailView(id:$0) }
-            .alert("Nova", isPresented:Binding(get:{nova.errorMessage != nil}, set:{ if !$0 {nova.errorMessage = nil} })) {
-                Button("OK") {nova.errorMessage = nil}
-            } message: {Text(nova.errorMessage ?? "")}
-            .confirmationDialog("Stop all Nova jobs?",isPresented:$showStopConfirmation,titleVisibility:.visible) {
-                Button("Emergency Stop",role:.destructive) {Task {await nova.emergencyStop()} }
-            } message: {Text("This stops work on the Mac until you run npm run resume locally.")}
         }
+        .animation(.easeInOut(duration: 0.3), value: listenerState.listening)
+        .preferredColorScheme(.dark)
+        .sheet(isPresented: $showPanel) { NovaPanel() }
+        .alert("Nova", isPresented:Binding(get:{nova.errorMessage != nil && !showPanel}, set:{ if !$0 {nova.errorMessage = nil} })) {
+            Button("OK") {nova.errorMessage = nil}
+        } message: {Text(nova.errorMessage ?? "")}
         .task {
             while !Task.isCancelled {
                 if nova.paired {await nova.refresh()}
@@ -82,6 +130,43 @@ struct ContentView: View {
                 Label(nova.busy ? "Pairing..." : "Pair Nova",systemImage:"link").frame(maxWidth:.infinity)
             }.buttonStyle(.borderedProminent).disabled(nova.busy || nova.pairingCode.isEmpty)
         }.padding().background(.white.opacity(0.06),in:RoundedRectangle(cornerRadius:16))
+    }
+
+}
+
+/// Everything besides the face: conversation, typing, settings, jobs and stop controls.
+/// Opened by pressing and holding the face.
+struct NovaPanel: View {
+    @EnvironmentObject private var nova: NovaModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var message = ""
+    @State private var showStopConfirmation = false
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment:.leading,spacing:16) {
+                    HStack(spacing:8) {
+                        Circle().fill(nova.connection == "Mac connected" ? .green : .orange).frame(width:9,height:9)
+                        Text(nova.connection).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    connected
+                }.padding()
+            }
+            .navigationTitle("Nova")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement:.cancellationAction) { Button("Unpair") { nova.unpair(); dismiss() } }
+                ToolbarItem(placement:.confirmationAction) { Button("Done") { dismiss() } }
+            }
+            .navigationDestination(for: String.self) { JobDetailView(id:$0) }
+            .alert("Nova", isPresented:Binding(get:{nova.errorMessage != nil}, set:{ if !$0 {nova.errorMessage = nil} })) {
+                Button("OK") {nova.errorMessage = nil}
+            } message: {Text(nova.errorMessage ?? "")}
+            .confirmationDialog("Stop all Nova jobs?",isPresented:$showStopConfirmation,titleVisibility:.visible) {
+                Button("Emergency Stop",role:.destructive) {Task {await nova.emergencyStop()} }
+            } message: {Text("This stops work on the Mac until you run npm run resume locally.")}
+        }
+        .presentationDragIndicator(.visible)
     }
 
     private var connected: some View {
@@ -115,15 +200,8 @@ struct ContentView: View {
                     Button(role:.destructive) {Task {await nova.stopTask()}} label:{Label("Stop this task",systemImage:"stop.fill")}.buttonStyle(.bordered)
                 }
             }
-            if listenerState.listening {
-                Text(listenerState.transcript.isEmpty ? "Listening…" : listenerState.transcript).foregroundStyle(.pink)
-            }
             HStack {
                 TextField("Message Nova",text:$message,axis:.vertical).lineLimit(1...5).textFieldStyle(.roundedBorder)
-                Button { Task { await nova.toggleListening() } } label: {
-                    Image(systemName: listenerState.listening ? "stop.circle.fill" : "mic.circle.fill").font(.title).foregroundStyle(listenerState.listening ? .pink : .cyan)
-                }.accessibilityLabel(listenerState.listening ? "Stop listening and send" : "Talk to Nova")
-                    .disabled(nova.stopped || nova.ai?.configured != true || (nova.working && !listenerState.listening))
                 Button { Task { if await nova.send(message) { message = "" } } } label: {
                     Image(systemName:"arrow.up.circle.fill").font(.title)
                 }.accessibilityLabel("Send message")
