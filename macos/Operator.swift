@@ -95,13 +95,13 @@ final class NovaCursor {
     func fly(to p: CGPoint) async {
         hide?.cancel()
         if panel.alphaValue < 0.05 { panel.setFrameOrigin(origin(realPointer())); panel.orderFrontRegardless() }
+        panel.alphaValue=1
         let from=panel.frame.origin, to=origin(p)
-        let duration=min(0.55,max(0.18,hypot(to.x-from.x,to.y-from.y)/2200))
-        await withCheckedContinuation { (done: CheckedContinuation<Void,Never>) in
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration=duration; context.timingFunction=CAMediaTimingFunction(name:.easeInEaseOut)
-                self.panel.animator().setFrameOrigin(to); self.panel.animator().alphaValue=1
-            }, completionHandler:{ done.resume() })
+        let frames=Int(min(33,max(11,hypot(to.x-from.x,to.y-from.y)/66)))
+        for frame in 1...frames {
+            let t=Double(frame)/Double(frames), eased=t < 0.5 ? 2*t*t : 1-pow(-2*t+2,2)/2
+            panel.setFrameOrigin(NSPoint(x:from.x+(to.x-from.x)*eased,y:from.y+(to.y-from.y)*eased))
+            try? await Task.sleep(for:.milliseconds(16))
         }
     }
     func idle() {
@@ -109,7 +109,7 @@ final class NovaCursor {
         hide=Task { @MainActor in
             try? await Task.sleep(for:.seconds(4))
             guard !Task.isCancelled else { return }
-            NSAnimationContext.runAnimationGroup({ $0.duration=0.4; self.panel.animator().alphaValue=0 },completionHandler:nil)
+            for step in stride(from:0.9,through:0,by:-0.1) { self.panel.alphaValue=step; try? await Task.sleep(for:.milliseconds(30)) }
         }
     }
     func vanish() { hide?.cancel(); panel.alphaValue=0 }
