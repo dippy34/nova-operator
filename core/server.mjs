@@ -96,6 +96,10 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
         if(task)active.get(task)?.abort();
         return json(res,200,{ended:true});
       }
+      if(req.method==='GET'&&url.pathname==='/v1/computer/live'){
+        try{const jpeg=await computer.live(device.id);res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(jpeg);}
+        catch(error){return json(res,409,{error:error.message});}
+      }
       const screenMatch=/^\/v1\/computer\/screen\/([a-zA-Z0-9_-]{16})$/.exec(url.pathname);
       if(screenMatch&&req.method==='GET'){
         try{const jpeg=computer.screen(device.id,screenMatch[1]);res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});return res.end(jpeg);}

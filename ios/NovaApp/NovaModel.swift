@@ -70,6 +70,12 @@ enum JSONValue: Decodable, CustomStringConvertible {
         }
     }
 }
+struct NovaResult: Equatable {
+    let id: String
+    let text: String
+    let ok: Bool
+    let cost: Double?
+}
 struct PairResult: Decodable { let id: String; let token: String }
 struct JobsResponse: Decodable { let jobs: [NovaJob] }
 struct CreatedJob: Decodable { let id: String; let status: String }
@@ -123,6 +129,20 @@ final class NovaModel: ObservableObject {
     private var spoken: Set<String>?
 
     var working: Bool { chat.map { ["queued","running"].contains($0.status) } ?? false }
+    @Published var result: NovaResult?
+    @Published var liveScreen: Data?
+    @Published var workStarted: Date?
+    private var resultTimer: Task<Void,Never>?
+
+    /// Nova's latest action point, as a fraction of the screen, from "… at x, y" descriptions.
+    var target: CGPoint? {
+        guard let chat, let event = chat.events.last(where: { $0.kind == "action" }),
+              let match = event.description.firstMatch(of: /(\d+), (\d+)$/),
+              let x = Double(match.1), let y = Double(match.2),
+              let data = liveScreen ?? computerScreen, let image = UIImage(data: data), image.size.width > 0 else { return nil }
+        let scale = image.scale
+        return CGPoint(x: x / (image.size.width * scale), y: y / (image.size.height * scale))
+    }
 
     var paired: Bool { KeychainToken.read() != nil }
 
@@ -206,6 +226,7 @@ final class NovaModel: ObservableObject {
             if let latest = jobs.first(where: { ["ai.chat","computer.task"].contains($0.type) }) {
                 let detail: NovaDetail = try await request("/v1/jobs/\(latest.id)")
                 chat = detail
+                if working { if workStarted == nil { workStarted = Date() } } else { workStarted = nil }
                 speakNew(detail)
                 let revision = latest.id + latest.updated_at + String(detail.events.count)
                 if latest.type == "computer.task", screenRevision != revision {
@@ -274,12 +295,33 @@ final class NovaModel: ObservableObject {
         }
     }
 
+    func dismissResult() { resultTimer?.cancel(); result = nil }
+
+    /// Polls a free screenshot of the Mac while the live view is open.
+    func watchScreen() async {
+        while !Task.isCancelled {
+            if let data = try? await fetchData("/v1/computer/live") { liveScreen = data }
+            try? await Task.sleep(for: .milliseconds(700))
+        }
+    }
+
+    private func fetchData(_ path: String) async throws -> Data {
+        guard let url = URL(string: path, relativeTo: try baseURL()) else { throw NovaError.invalidURL }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 15
+        req.setValue("Bearer \(KeychainToken.read() ?? "")", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: req)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw NovaError.server("Screen unavailable") }
+        return data
+    }
+
     func toggleListening() async {
         if listener.listening {
             let text = await listener.stop().trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { await send(text) }
         } else {
             speaker.stop()
+            dismissResult()
             do { try await listener.start() } catch { errorMessage = error.localizedDescription }
         }
     }
@@ -294,6 +336,16 @@ final class NovaModel: ObservableObject {
         for (key,text) in lines where !heard.contains(key) {
             heard.insert(key)
             if voiceReplies && !listener.listening { speaker.say(text) }
+            if key.hasSuffix("-reply") || key.hasSuffix("-error") {
+                var cost: Double?
+                if case .number(let usd)? = detail.result?["estimatedUSD"] { cost = usd }
+                result = NovaResult(id: detail.id, text: text, ok: key.hasSuffix("-reply"), cost: cost)
+                resultTimer?.cancel()
+                resultTimer = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(20))
+                    if !Task.isCancelled { self?.result = nil }
+                }
+            }
         }
         spoken = heard
     }

@@ -67,6 +67,14 @@ test('agent runs Claude computer-use calls in order without approvals and return
   assert.throws(()=>f.control.screen(f.other.id,id),/owner/);
  }finally{f.close();}
 });
+test('live screenshots are owner-only and never reach Claude',async()=>{
+ const f=fixture();
+ try{
+  assert.deepEqual(await f.control.live(f.owner.id),Buffer.from('anBn','base64'));
+  await assert.rejects(f.control.live(f.other.id),/owner/);
+  assert.deepEqual(f.calls,[{action:'screenshot'}]);assert.equal(f.bodies.length,0);
+ }finally{f.close();}
+});
 test('the allowance is reserved before each Claude turn and blocks once exhausted',async()=>{
  const f=fixture();
  try{

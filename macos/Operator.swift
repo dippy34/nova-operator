@@ -197,7 +197,8 @@ func perform(_ request: [String:Any]) async throws -> [String:Any] {
     let action=request["action"] as? String ?? ""
     let display=Display.main()
     if action == "begin" { halted=false; return ["width":Int(display.imageSize.width),"height":Int(display.imageSize.height)] }
-    if halted { try deny("Stopped on the Mac with Control-Option-S. Send a new request to start again.") }
+    let looking=["screenshot","zoom","cursor_position"].contains(action)
+    if halted && !looking { try deny("Stopped on the Mac with Control-Option-S. Send a new request to start again.") }
     guard AXIsProcessTrusted(), CGPreflightScreenCaptureAccess() else { try deny("Allow Nova Operator in macOS Accessibility and Screen Recording settings.") }
     func coordinate(_ key: String = "coordinate") throws -> CGPoint? {
         guard let raw=request[key] else { return nil }
@@ -281,7 +282,7 @@ func perform(_ request: [String:Any]) async throws -> [String:Any] {
     default:
         try deny("Unsupported action \(action)")
     }
-    if halted { try deny("Stopped on the Mac with Control-Option-S.") }
+    if halted && !looking { try deny("Stopped on the Mac with Control-Option-S.") }
     return ["text":"OK"]
 }
 

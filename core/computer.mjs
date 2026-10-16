@@ -56,7 +56,7 @@ const describe=(name,input)=>{
 };
 
 export function createComputer(store,{run=native,permissionCheck=permissions,agent=runAgent,call}={}) {
-  let current=null;
+  let current=null,liveBusy=false;
   const screens=new Map(), memory=new Map();
   const owner=()=>store.db.prepare("SELECT value FROM settings WHERE key='computer_owner'").get()?.value;
   const authorize=device=>{
@@ -100,6 +100,14 @@ export function createComputer(store,{run=native,permissionCheck=permissions,age
       }finally{current=null;}
     },
     stop(){current=null;screens.clear();memory.clear();},
+    // A fresh screenshot for the iPhone's live view. Never goes to Claude.
+    async live(device){
+      authorize(device);
+      if(liveBusy)fail('A live screenshot is already being captured');
+      liveBusy=true;
+      try{const shot=await run({action:'screenshot'});return Buffer.from(shot.image,'base64');}
+      finally{liveBusy=false;}
+    },
     screen(device,id){authorize(device);const screen=screens.get(device);if(screen?.id!==id)fail('Screen not found');return Buffer.from(screen.jpeg,'base64');}
   };
 }
