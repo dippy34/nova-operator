@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, chmodSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 
@@ -11,7 +11,13 @@ const random = count => randomBytes(count).toString('base64url');
 export class Store {
   constructor(file) {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    closeSync(openSync(file, 'a', 0o600));
+    chmodSync(file, 0o600);
+    for (const suffix of ['-wal', '-shm']) {
+      if (existsSync(file + suffix)) chmodSync(file + suffix, 0o600);
+    }
     this.db = new DatabaseSync(file);
+    this.db.exec('PRAGMA busy_timeout=5000');
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS invitations(
@@ -61,6 +67,8 @@ export class Store {
     const row = this.db.prepare('SELECT id,name,token_hash FROM devices WHERE token_hash=?').get(h);
     return row && equals(row.token_hash, h) ? { id: row.id, name: row.name } : null;
   }
+  devices() { return this.db.prepare('SELECT id,name,created_at FROM devices ORDER BY created_at').all(); }
+  revokeDevice(id) { return this.db.prepare('DELETE FROM devices WHERE id=?').run(id).changes === 1; }
   stopped() { return this.db.prepare("SELECT value FROM settings WHERE key='stopped'").get().value === '1'; }
   stop() {
     this.db.prepare("UPDATE settings SET value='1' WHERE key='stopped'").run();

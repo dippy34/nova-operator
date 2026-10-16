@@ -2,7 +2,7 @@ import http from 'node:http';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolve, join } from 'node:path';
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Store } from './db.mjs';
 
@@ -31,21 +31,23 @@ function cleanMessage(message) {
 
 export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORKSPACE, executeOverride } = {}) {
   const store = new Store(dbFile);
-  store.reconcileStartup();
   let server;
+  let closing = false, closePromise;
   const active = new Map();
+  const pending = new Set();
   const execute = executeOverride ?? (async (type, payload, signal) => {
     if (type === 'hello') return { message: `Nova received: ${payload.message || 'Hello!'}` };
     if (type === 'mac.status') return { platform: os.platform(), release: os.release(), arch: os.arch(), uptimeSeconds: Math.round(os.uptime()) };
     if (type === 'repo.status') {
       if (!workspace) throw new Error('NOVA_WORKSPACE not configured on the Mac');
-      const { stdout } = await execFileAsync('git', ['status','--short','--branch'], { cwd: resolve(workspace), timeout: 10000, maxBuffer: 4096, signal });
+      // Status can otherwise execute a repository's fsmonitor hook and refresh its index.
+      const { stdout } = await execFileAsync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', 'status', '--short', '--branch', '--ignore-submodules=all'], { cwd: resolve(workspace), timeout: 10000, maxBuffer: 4096, signal });
       return { output: stdout.trim().slice(0,4000) };
     }
     throw new Error('Unknown safe task type');
   });
   const runJob = async (id, type, payload) => {
-    if (store.stopped()) { store.updateJob(id, 'cancelled'); return; }
+    if (closing || store.stopped()) { store.updateJob(id, 'cancelled'); return; }
     const controller = new AbortController(); active.set(id, controller);
     store.updateJob(id, 'running');
     try {
@@ -57,6 +59,7 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
   };
   const handler = async (req, res) => {
     try {
+      if (closing) return json(res,503,{error:'Core is shutting down'});
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
       if (req.method === 'GET' && url.pathname === '/v1/health') return json(res, 200, { service:'nova-core', version:'0.1.0', ready:true });
       if (req.method === 'POST' && url.pathname === '/v1/pair') {
@@ -76,7 +79,9 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
         if (!body || !types.has(body.type)) return json(res,400,{error:'Only known read-only task types are supported in v0.1'});
         const payload = { message: body.type === 'hello' ? cleanMessage(body.message ?? '') : '' };
         const id = store.createJob(device.id, body.type, payload);
-        setImmediate(() => { void runJob(id, body.type, payload); });
+        const task = new Promise(ok => setImmediate(ok)).then(() => runJob(id, body.type, payload));
+        pending.add(task);
+        void task.finally(() => pending.delete(task));
         return json(res,202,{id,status:'queued'});
       }
       const jobMatch = /^\/v1\/jobs\/([a-zA-Z0-9_-]{16})$/.exec(url.pathname);
@@ -94,11 +99,23 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
   return {
     store,
     async listen(port=8787, host='127.0.0.1') {
+      if (host !== '127.0.0.1' && host !== '::1') throw new Error('Nova Core must listen on loopback; use private Tailscale Serve');
       server=http.createServer((req,res)=>{void handler(req,res);});
       await new Promise((ok,fail)=>server.once('error',fail).listen(port,host,ok));
+      // A failed second server must never interrupt jobs in the live instance.
+      store.reconcileStartup();
       return server.address().port;
     },
-    async close() { for(const c of active.values()) c.abort(); if(server) await new Promise(ok=>server.close(ok)); store.close(); }
+    close() {
+      if (!closePromise) closePromise = (async () => {
+        closing = true;
+        for (const c of active.values()) c.abort();
+        if (server?.listening) await new Promise(ok => server.close(ok));
+        await Promise.allSettled([...pending]);
+        store.close();
+      })();
+      return closePromise;
+    }
   };
 }
 
@@ -106,5 +123,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const app = makeNova();
   const port = await app.listen(Number(process.env.NOVA_PORT ?? 8787));
   console.log(`Nova Core v0.1 listening on http://127.0.0.1:${port} (safe read-only tasks only)`);
-  process.on('SIGINT',()=>{void app.close().then(()=>process.exit(0));});
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal,()=>{void app.close().then(()=>process.exit(0));});
+  }
 }

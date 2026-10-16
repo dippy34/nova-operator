@@ -68,11 +68,22 @@ enum NovaError: LocalizedError {
     }
 }
 
+// Never forward a pairing code or bearer credential through a redirect.
+final class NovaSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
 /// This v0.1 transport uses a Keychain-stored bearer credential over TLS + Tailscale.
 /// Signed device requests and scoped MissionGrants are a later milestone. No privileged
 /// tools are exposed while this prototype credential scheme is in place.
 @MainActor
 final class NovaModel: ObservableObject {
+    private let session = URLSession(configuration: .ephemeral, delegate: NovaSessionDelegate(), delegateQueue: nil)
     @Published var address = UserDefaults.standard.string(forKey: "nova.baseURL") ?? ""
     @Published var pairingCode = ""
     @Published var connection = "Not connected"
@@ -84,7 +95,9 @@ final class NovaModel: ObservableObject {
     var paired: Bool { KeychainToken.read() != nil }
 
     private func baseURL() throws -> URL {
-        guard let url = URL(string: address.trimmingCharacters(in: .whitespacesAndNewlines)),
+        let savedAddress = UserDefaults.standard.string(forKey: "nova.baseURL")
+        let selectedAddress = paired ? (savedAddress ?? "") : address
+        guard let url = URL(string: selectedAddress.trimmingCharacters(in: .whitespacesAndNewlines)),
               url.scheme == "https", url.host != nil, url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil, url.path.isEmpty || url.path == "/"
         else { throw NovaError.invalidURL }
@@ -106,7 +119,7 @@ final class NovaModel: ObservableObject {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await session.data(for: req)
         guard let response = response as? HTTPURLResponse else { throw NovaError.server("Invalid response") }
         guard (200...299).contains(response.statusCode) else {
             let apiError = try? JSONDecoder().decode(APIError.self, from: data)
@@ -116,6 +129,7 @@ final class NovaModel: ObservableObject {
     }
 
     func pair() async {
+        guard !paired, !busy else { return }
         busy = true; errorMessage = nil
         defer { busy = false }
         do {

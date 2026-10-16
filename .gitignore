@@ -4,6 +4,5 @@ node_modules/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
-ios/Nova.xcodeproj/
 ios/NovaApp/Info.plist
 .DerivedData/

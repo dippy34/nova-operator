@@ -9,6 +9,9 @@
     "start": "node core/server.mjs",
     "pair": "node core/cli.mjs pair",
     "resume": "node core/cli.mjs resume",
+    "service:install": "node core/service.mjs install",
+    "service:status": "node core/service.mjs status",
+    "service:remove": "node core/service.mjs remove",
     "test": "node --test core/*.test.mjs"
   }
 }
