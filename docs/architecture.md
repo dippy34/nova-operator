@@ -2,7 +2,7 @@
 
 Status: **Proposed.** Not yet accepted by Matthew. See [`decisions/`](decisions/) for the individual choices and their status.
 
-The brain can propose anything, only Core can authorize, and only token holders can act. Effect-based policy decides what's allowed; OS-level containment (sandboxes and an egress proxy) makes sure nothing can route around it.
+The brain can propose anything, only Core can authorize, and only token holders can act. Effect-based policy decides what's allowed; verified OS-level containment must prevent bypass. Until tested, do not claim sandbox or network-policy enforcement is complete.
 
 ## 1. Trust tiers
 
@@ -19,21 +19,21 @@ This follows the privileged-planner, quarantined-reader pattern from prompt-inje
 
 ## 2. Processes on the Mac
 
-All run as LaunchAgents in the logged-in user session. A LaunchDaemon can't post events to the GUI.
+User-session GUI helpers run as LaunchAgents. Background services may use other launchd arrangements as appropriate, but a LaunchDaemon cannot directly operate the user's GUI. Privilege and OS containment boundaries matter more than the implementation language.
 
 1. **`nova-core`** (TypeScript/Node). Remote API on the tailnet, signature verification, approval manager, policy engine (Cedar via WASM, or a hand-rolled deterministic evaluator), scheduler, SQLite journal in WAL mode, token minter, APNs sender, budgets, kill switch. Small and boring on purpose.
 2. **`nova-brain`** (TypeScript, separate process). Planner loop, model router, context and memory. No executor credentials, no TCC grants; talks only to Core.
 3. **`nova-operator`** (Swift). The only binary holding Accessibility and Screen Recording grants. Does AX, ScreenCaptureKit, CGEvent, AppleScript/JXA, and `shortcuts run`. Verifies tokens and checks each IPC peer's code signature.
 4. **Browser worker** (Node + Playwright). Dedicated Nova Chrome profile with its own `--user-data-dir`. Real-profile control via an extension using `chrome.debugger` is a later opt-in, with more power and a larger blast radius.
 5. **Agent runner** (Node). Claude Code via the Claude Agent SDK; Codex via app-server (JSON-RPC over stdio) or the Codex SDK. One git worktree per agent.
-6. **Shell runner.** Commands run under a Seatbelt (`sandbox-exec`) profile with write scope limited to the task.
-7. **Egress proxy.** Every sandboxed process (shell, browser, Claude Code, Codex) reaches the network only through it, with per-mission domain allowlists. This is what actually closes "use curl instead of the email tool."
+6. **Shell runner.** Runs in a target-macOS-tested isolation boundary with restricted credentials and filesystem writes. `sandbox-exec` is deprecated and is **not accepted as a proven production boundary** by itself. Evaluate OS-supported sandboxing, restricted accounts, or a VM; block unsafe execution until containment is proven.
+7. **Enforced network boundary.** A per-mission egress allowlist must constrain *all* agent traffic, not merely set a proxy environment variable. Verify that direct socket connections, DNS, `curl`, child processes, browsers and agent tools cannot route around it. Use a tested VM/network boundary or appropriately entitled OS-level enforcement if necessary; otherwise, disable unverified network permissions.
 
 **IPC:** JSON-RPC 2.0 over Unix domain sockets. Each server checks the peer's PID, then its code signature. Avoid XPC unless needed, since it's awkward from Node.
 
 **Code signing:** TCC grants are tied to the code signature. Sign every build with a stable Developer ID from day one, or rebuilds silently reset grants. Distribute as a notarized Developer ID app; App Store sandboxing forbids controlling other apps.
 
-**v1 simplification:** Core and Brain may share one process with a strict module boundary, and split before Phase 5 when GUI and vision autonomy arrives. Executor token verification exists from day one either way.
+**Trust boundary:** Keep `nova-brain` outside the authorization process from Phase 1 if practical. A module boundary in one Node process is **not** a security boundary: model-driven tool orchestration could still call privileged APIs if compromised. Separate processes help but require OS-level credentials and IPC permissions isolation, not just separation by name. Executor token verification exists from day one. See the trust-boundary ADR.
 
 ## 3. Contracts between planner, policy, scheduler, and adapters
 
@@ -72,10 +72,10 @@ A `deny` closes that effect for the rest of the mission, whichever tool tries to
 
 ### Taint tracking
 
-- A Brain context that reads untrusted content (web, email, documents, agent output) is marked tainted.
-- Tainted contexts can't trigger `comm.send`, `publish`, `purchase`, or `auth.change` without approval, even if the grant allows it.
-- Coarse on purpose. Fine-grained taint tracking through an LLM isn't reliable.
-- The effect policy is pinned when the mission starts, so text read mid-task can't widen it.
+- External pages, messages, repository files and agent output are **untrusted observations**, never instructions that can expand a mission grant.
+- Do not automatically cancel every preapproved consequential action merely because a workflow read untrusted data: that would defeat unattended autonomy. Instead, bind permissions to exact targets, effect classes, destinations, rates and budgets; require independent postcondition and provenance checks before permitted actions.
+- When untrusted content attempts to modify instructions, recipients, destinations, command scope or authorization, quarantine the proposal and request a fresh, narrowly scoped approval. Unknown-effect actions fail closed.
+- This is a proposed policy, **not a solved prompt-injection defense**. Include adversarial tests before allowing `comm.send`, `publish` or destructive actions unattended. The effect policy is pinned at mission start.
 
 ## 4. Scheduler
 
@@ -98,12 +98,12 @@ A journaled **dynamic task graph**, not a static DAG and not a general workflow 
 
 - Each agent works in its own git worktree.
 - Nova's policy is wired into the agents' own permission hooks: `canUseTool` and hooks in the Agent SDK; approval and sandbox policy in Codex. Running either with "bypass permissions" deletes the policy engine in practice.
-- Agent hooks are not a security boundary by themselves. Agents also run inside OS sandboxes, with network only through the egress proxy.
+- Agent hooks are not a security boundary by themselves. Agents must also run inside a verified containment boundary with genuinely enforced filesystem and network restrictions. A proxy configured by convention does not provide this guarantee.
 - "Done" is judged by objective checks (tests pass in a clean checkout, build succeeds, diff stays in scope), never by the agent saying it's done.
 
 ## 6. Remote, device, and model layer
 
-- **Transport.** v1: a Tailscale tailnet, with Core serving HTTPS and WebSocket only on the tailnet interface. v2: an optional relay (for example a Cloudflare Worker with a Durable Object) carrying end-to-end-encrypted envelopes, to queue commands while the Mac is offline. The relay can relay but never forge.
+- **Transport.** v1: a Tailscale tailnet, with Core serving HTTPS and WebSocket only on the tailnet interface. The native iPhone app needs its tailnet connection active; when Core is offline, it should show disconnected and preserve unsent drafts, not promise background delivery from a suspended iOS process. v2: an optional relay (for example a Cloudflare Worker with a Durable Object) carrying end-to-end-encrypted envelopes, to queue commands while the Mac is offline. The relay can relay but never forge.
 - **Authentication.** Every request is signed with a per-device P-256 key in the Secure Enclave. Approval and grant keys require Face ID (`.biometryCurrentSet`). Requests carry a nonce, a timestamp, and the target action hash. Core keeps allowlisted public keys and per-device roles. App Attest on the iPhone app.
 - **Push.** Core sends APNs itself, with minimal payloads ("approval needed"). The app fetches details over the tailnet. Live Activities show long-running mission status.
 - **Desk companion.** Foreground app with Guided Access and auto-lock off. On-device speech (`SpeechAnalyzer` on iOS 26, or `SFSpeechRecognizer`). Its own wake-word detector, since iOS has no API for custom always-on wake words. Observer role key: Core rejects every approval from it.

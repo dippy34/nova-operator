@@ -8,11 +8,12 @@ Most of the plumbing exists today. The hard parts are effect descriptors, long-h
 - Claude Code via the Agent SDK (`canUseTool`, hooks, sandboxing); Codex via app-server or SDK with its sandbox and approval policies.
 - Playwright on a dedicated Chrome profile.
 - AX on AppKit and SwiftUI apps, and on Electron apps once `AXManualAccessibility` is set; AppleScript on scriptable apps; `shortcuts run`; ScreenCaptureKit; CGEvent in an unlocked session.
-- Seatbelt sandboxes, SQLite journaling, git worktrees, APFS local snapshots, Keychain, power assertions.
+- SQLite journaling, git worktrees, Keychain and power assertions. Sandboxing and enforceable network egress for arbitrary agents **require target-platform proof**; do not treat a deprecated `sandbox-exec` invocation or opt-in proxy as an established boundary.
 
 ## Needs substantial engineering
 
 - Effect descriptors and reconcile probes for every adapter operation. The single largest workload.
+- Proving real filesystem, process, credentials, DNS and network containment for arbitrary agent subprocesses. Proxy configuration by itself is insufficient.
 - Dynamic task graph with leases, crash recovery, and approval binding.
 - Supervision logic: stuck detection, objective acceptance checks, budgets.
 - Per-app adapters for the top apps.
@@ -25,6 +26,7 @@ Most of the plumbing exists today. The hard parts are effect descriptors, long-h
 - Supervising agents on tasks with no objective test ("make the UI nicer").
 - Prompt injection resistance. Mitigable with taint tracking and containment; not solved anywhere.
 - Context coherence over multi-hour missions.
+- Reliably delivering locally queued iPhone requests while the app is suspended and the Mac is offline; v1 must show drafts as unsent.
 - Websites with bot detection. Nova should stop at a CAPTCHA, not solve it.
 
 ## Prevented by macOS or third-party security

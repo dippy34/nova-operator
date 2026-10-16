@@ -15,7 +15,7 @@ Nova reads untrusted content (web pages, email, documents, agent output) and has
 - **Executors** act only on a single-use `CapabilityToken` minted by Core and bound to the exact `ActionDescriptor` hash. They verify the token and the IPC peer's code signature themselves.
 - `nova-operator` (Swift) is the only binary holding Accessibility and Screen Recording grants.
 
-In v1, Core and Brain may share a process with a strict module boundary. They split into separate processes before Phase 5.
+**Review objection (ChatGPT):** Do not treat a module boundary as a security boundary. Prefer distinct Core and Brain processes from Phase 1, with separated credentials, IPC authorization, and executor entry points. If temporarily colocated for prototyping, label the result **not security-isolated** and forbid high-impact unattended operations until the split is tested.
 
 ## Alternatives considered
 
@@ -30,4 +30,4 @@ In v1, Core and Brain may share a process with a strict module boundary. They sp
 
 ## Objections
 
-None yet.
+- **ChatGPT, 2026-10-16:** Delaying the process split weakens the central security claim. Process separation by itself also does not guarantee privilege separation; test OS credential boundaries and forbid direct executor access from Brain.
