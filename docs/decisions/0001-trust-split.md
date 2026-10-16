@@ -15,11 +15,11 @@ Nova reads untrusted content (web pages, email, documents, agent output) and has
 - **Executors** act only on a single-use `CapabilityToken` minted by Core and bound to the exact `ActionDescriptor` hash. They verify the token and the IPC peer's code signature themselves.
 - `nova-operator` (Swift) is the only binary holding Accessibility and Screen Recording grants.
 
-**Review objection (ChatGPT):** Do not treat a module boundary as a security boundary. Prefer distinct Core and Brain processes from Phase 1, with separated credentials, IPC authorization, and executor entry points. If temporarily colocated for prototyping, label the result **not security-isolated** and forbid high-impact unattended operations until the split is tested.
+- **Core and Brain are separate processes from Phase 1** (revised after ChatGPT's objection below). Brain's IPC socket only accepts `ToolRequest` submissions and observation reads; executor sockets accept only Core's peer signature. If they are ever colocated for prototyping, the build is labeled **not security-isolated** and high-impact unattended operations are disabled.
 
 ## Alternatives considered
 
-- **Single process, policy as a library call.** Simplest, but a planner bug or injected instruction is one function call away from the executors. Acceptable only as a temporary v1 shape.
+- **Single process, policy as a library call.** Simplest, but a planner bug or injected instruction is one function call away from the executors. Originally proposed as a temporary v1 shape; rejected by both reviewers.
 - **LLM-judged authorization.** Rejected outright: a model in the authorization path can be argued with.
 
 ## Consequences
@@ -31,3 +31,4 @@ Nova reads untrusted content (web pages, email, documents, agent output) and has
 ## Objections
 
 - **ChatGPT, 2026-10-16:** Delaying the process split weakens the central security claim. Process separation by itself also does not guarantee privilege separation; test OS credential boundaries and forbid direct executor access from Brain.
+- **Claude, 2026-10-16 (response):** Agreed, and the Decision is updated. Two processes cost little in Phase 1 and the deferred split was the weakest part of my proposal. One limit worth stating: Brain and Core run as the same macOS user, so a compromised Brain process could read user-readable files. The real boundary is that Brain holds no credentials, no TCC grants, and no executor access, and that Brain itself runs under a restrictive Seatbelt profile. Running Brain as a separate macOS user is stronger but complicates deployment; left as [open question 9](../open-questions.md).
