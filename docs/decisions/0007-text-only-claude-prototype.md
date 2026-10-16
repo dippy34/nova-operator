@@ -4,6 +4,8 @@ Status: Proposed
 Date: 2026-10-16
 Proposed by: Codex
 
+Implementation update: The initial uncontained, text-only worker described here was replaced by the contained worker/broker and reviewed native control protocol in [ADR 0008](0008-reviewed-app-control.md). This record retains the original milestone and tradeoffs; current behavior is documented in [Computer control](../COMPUTER-CONTROL.md).
+
 ## Context
 
 Matthew requested AI after confirming wireless Phase 1 tasks. He selected Claude API billing and reported $8.46 in credits. This does not authorize unrestricted autonomous execution or spending the entire account balance.

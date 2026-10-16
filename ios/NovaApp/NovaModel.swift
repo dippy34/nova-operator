@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Security
+import LocalAuthentication
 
 struct NovaStatus: Decodable {
     let connected: Bool
@@ -8,7 +9,18 @@ struct NovaStatus: Decodable {
     let device: String
     let capabilities: [String]
     let ai: NovaAIStatus?
+    let computer: NovaComputerStatus?
 }
+struct NovaComputerStatus: Decodable {
+    let owner: Bool
+    let active: Bool
+    let app: String?
+    let expires: Double?
+    let apps: [String]
+    let busy: Bool
+}
+struct EndComputerResult: Decodable { let ended: Bool }
+struct RejectedComputerResult: Decodable { let status: String }
 struct NovaAIStatus: Decodable {
     let configured: Bool
     let model: String
@@ -88,8 +100,8 @@ final class NovaSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Se
 }
 
 /// This v0.1 transport uses a Keychain-stored bearer credential over TLS + Tailscale.
-/// Signed device requests and scoped MissionGrants are a later milestone. No privileged
-/// tools are exposed while this prototype credential scheme is in place.
+/// Signed device requests remain a later milestone. Reviewed computer sessions are
+/// restricted to the locally designated owner, expire, and bind each approval to one action.
 @MainActor
 final class NovaModel: ObservableObject {
     private let session = URLSession(configuration: .ephemeral, delegate: NovaSessionDelegate(), delegateQueue: nil)
@@ -102,6 +114,9 @@ final class NovaModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var ai: NovaAIStatus?
     @Published var chat: NovaDetail?
+    @Published var computer: NovaComputerStatus?
+    @Published var computerScreen: Data?
+    private var screenRevision = ""
 
     var paired: Bool { KeychainToken.read() != nil }
 
@@ -181,8 +196,16 @@ final class NovaModel: ObservableObject {
             let list: JobsResponse = try await request("/v1/jobs")
             jobs = list.jobs; stopped = status.stopped; connection = stopped ? "Emergency stopped" : "Mac connected"
             ai = status.ai
-            if let latest = jobs.first(where: { $0.type == "ai.chat" }) {
+            computer = status.computer
+            if let latest = jobs.first(where: { ["ai.chat","computer.task"].contains($0.type) }) {
                 chat = try await request("/v1/jobs/\(latest.id)")
+                let revision = latest.id + latest.updated_at
+                if latest.type == "computer.task", status.computer?.active == true, screenRevision != revision {
+                    var req = URLRequest(url: URL(string:"/v1/computer/screen/\(latest.id)",relativeTo:try baseURL())!)
+                    req.setValue("Bearer \(KeychainToken.read() ?? "")",forHTTPHeaderField:"Authorization")
+                    let (data,response) = try await session.data(for:req)
+                    if (response as? HTTPURLResponse)?.statusCode == 200 {computerScreen = data; screenRevision = revision}
+                } else if latest.type != "computer.task" || status.computer?.active != true {computerScreen = nil}
             }
             errorMessage = nil
         } catch {
@@ -217,8 +240,37 @@ final class NovaModel: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    func startComputer(_ app: String) async {
+        guard !busy else {return}
+        busy = true; defer {busy = false}
+        do { let _: NovaComputerStatus = try await request("/v1/computer/session",method:"POST",body:["app":app]); await refresh() }
+        catch {errorMessage = error.localizedDescription}
+    }
+
+    func endComputer() async {
+        busy = true; defer {busy = false}
+        do {let _:EndComputerResult = try await request("/v1/computer/end",method:"POST",body:[:]);computerScreen = nil;await refresh()}
+        catch {errorMessage = error.localizedDescription}
+    }
+
+    func reviewComputer(_ id: String, approvalID: String?, approve: Bool) async {
+        guard !busy else {return}
+        guard let approvalID else {errorMessage = "Refresh the proposed action before approving it.";return}
+        busy = true; defer {busy = false}
+        do {
+            if approve {
+                let confirmed = try await LAContext().evaluatePolicy(.deviceOwnerAuthentication,localizedReason:"Approve this exact Nova computer action")
+                guard confirmed else {return}
+                let _:CreatedJob = try await request("/v1/computer/approve/\(id)",method:"POST",body:["approvalID":approvalID])
+            } else {
+                let _:RejectedComputerResult = try await request("/v1/computer/reject/\(id)",method:"POST",body:["approvalID":approvalID])
+            }
+            await refresh()
+        } catch {errorMessage = error.localizedDescription}
+    }
+
     func unpair() {
-        KeychainToken.clear(); jobs = []; chat = nil; ai = nil; connection = "Not connected"; errorMessage = nil
+        KeychainToken.clear(); jobs = []; chat = nil; ai = nil; computer = nil; computerScreen = nil; connection = "Not connected"; errorMessage = nil
     }
 }
 

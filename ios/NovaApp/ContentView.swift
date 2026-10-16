@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct NovaFace: View {
     var body: some View {
@@ -21,6 +22,8 @@ struct ContentView: View {
     @EnvironmentObject private var nova: NovaModel
     @State private var message = ""
     @State private var showStopConfirmation = false
+    @State private var selectedApp = "Calculator"
+    @State private var showComputerConfirmation = false
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -45,6 +48,9 @@ struct ContentView: View {
             .confirmationDialog("Stop all Nova jobs?",isPresented:$showStopConfirmation,titleVisibility:.visible) {
                 Button("Emergency Stop",role:.destructive) {Task {await nova.emergencyStop()} }
             } message: {Text("This stops work on the Mac until you run npm run resume locally.")}
+            .confirmationDialog("Allow a 20-minute computer session in \(selectedApp)?",isPresented:$showComputerConfirmation,titleVisibility:.visible) {
+                Button("Allow \(selectedApp) session") {Task {await nova.startComputer(selectedApp)}}
+            } message: {Text("The selected app's window will be sent to Anthropic when you request computer tasks. Each click, scroll, key and text entry requires your review and device authentication. Inputs may change files or send information inside that app. Handle passwords, purchases, security changes and irreversible actions yourself.")}
         }
         .task {
             while !Task.isCancelled {
@@ -73,8 +79,20 @@ struct ContentView: View {
 
     private var connected: some View {
         VStack(alignment:.leading,spacing:16) {
+            if let computer = nova.computer, computer.owner {
+                Text("Computer control").font(.title2.bold())
+                if computer.active {
+                    Text("Session: \(computer.app ?? "Mac app")").foregroundStyle(.cyan)
+                    Text("Send a task below. Review each proposed input before it runs. Switching to another Mac app pauses control.").font(.caption).foregroundStyle(.secondary)
+                    Button("End computer session") {Task {await nova.endComputer()}}.buttonStyle(.bordered)
+                } else {
+                    Picker("App",selection:$selectedApp) {ForEach(computer.apps,id:\.self) {Text($0).tag($0)}}
+                    Button("Start 20-minute session") {showComputerConfirmation = true}.buttonStyle(.borderedProminent).disabled(nova.busy || nova.stopped)
+                }
+                Divider()
+            }
             Text("Talk to Nova").font(.title2.bold())
-            Text("Chat with Claude. Messages and a few recent replies are sent to Anthropic. Computer control is not enabled yet.")
+            Text(nova.computer?.active == true ? "Computer mode: your selected window and task go to Claude. Proposed input waits for your approval." : "Chat with Claude. Messages and a few recent replies are sent to Anthropic. Start a computer session to request screen-based actions.")
                 .font(.caption).foregroundStyle(.secondary)
             if let ai = nova.ai {
                 Text(String(format:"Nova AI allowance: $%.4f used of $%.2f",ai.usedUSD,ai.allowanceUSD))
@@ -92,17 +110,27 @@ struct ContentView: View {
                 } else if let error = chat.error { Text(error).foregroundStyle(.orange) }
                 else if ["queued","running"].contains(chat.status) { ProgressView("Nova is thinking…") }
                 else { Text("Message \(chat.status)").foregroundStyle(.secondary) }
+                if chat.type == "computer.task", let data = nova.computerScreen, let image = UIImage(data:data) {
+                    Image(uiImage:image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius:8))
+                }
+                if chat.status == "awaiting_approval" {
+                    Text(chat.result?["summary"]?.description ?? "Review proposed action").font(.headline).textSelection(.enabled)
+                    HStack {
+                        Button("Approve action") {Task {await nova.reviewComputer(chat.id,approvalID:chat.result?["approvalID"]?.description,approve:true)}}.buttonStyle(.borderedProminent)
+                        Button("Reject",role:.destructive) {Task {await nova.reviewComputer(chat.id,approvalID:chat.result?["approvalID"]?.description,approve:false)}}.buttonStyle(.bordered)
+                    }.disabled(nova.busy || nova.stopped || nova.computer?.active != true)
+                }
             }
             HStack {
                 TextField("Message Nova",text:$message,axis:.vertical).lineLimit(1...5).textFieldStyle(.roundedBorder)
-                Button { Task { if await nova.submit("ai.chat",message:message) { message = "" } } } label: {
+                Button { Task { if await nova.submit(nova.computer?.active == true ? "computer.task" : "ai.chat",message:message) { message = "" } } } label: {
                     Image(systemName:"arrow.up.circle.fill").font(.title2)
                 }.accessibilityLabel("Send message")
                     .disabled(nova.busy || nova.stopped || nova.ai?.configured != true || nova.ai?.busy == true || message.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || message.count > 2000)
             }
             Divider()
             Text("Safe tasks").font(.title2.bold())
-            Text("This first version runs real read-only Mac checks. AI control and GUI access aren't enabled yet.")
+            Text("These checks do not use AI or change your Mac.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Mac status") {Task {await nova.submit("mac.status")}}

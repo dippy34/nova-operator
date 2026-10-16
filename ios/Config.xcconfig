@@ -1,2 +1,3 @@
 // Personal signing details belong in the ignored local file, not in Git.
 #include? "Signing.local.xcconfig"
+INFOPLIST_KEY_NSFaceIDUsageDescription = Confirm each Nova computer action before it runs on your Mac.

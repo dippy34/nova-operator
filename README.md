@@ -6,7 +6,7 @@ The core idea is **preauthorized autonomy**: before leaving, you grant Nova spec
 
 ## Status
 
-**Phase 1 implementation started (2026-10-16).** Nova now has a tested, read-only Mac-side prototype and native SwiftUI iPhone source. This is **not** full autonomous computer control; privileged actions remain disabled until authentication, sandboxing and policy enforcement are built and tested.
+**Native prototype installed (2026-10-16).** Wireless iPhone pairing, read-only Mac checks and Claude chat are verified. Reviewed app-scoped mouse/keyboard/screen control is built and installed, with a negatively tested Brain sandbox and 27 passing tests; its live iPhone input smoke test is pending. Each input requires an exact owner approval. Unrestricted unattended control and coding-agent supervision remain disabled. See [current computer-control evidence and limits](docs/COMPUTER-CONTROL.md).
 
 **Start here:** [Phase 1 installation and testing guide](docs/PHASE1-START.md). The native app is under `ios/`, and Mac Core under `core/`.
 

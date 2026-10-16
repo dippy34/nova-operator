@@ -39,7 +39,7 @@ export class Store {
   }
   // Called only when Nova Core starts, not by a concurrent pairing CLI.
   reconcileStartup() {
-    this.db.prepare("UPDATE jobs SET status='interrupted',error='Core restarted before outcome was confirmed',updated_at=? WHERE status IN ('running','queued')").run(now());
+    this.db.prepare("UPDATE jobs SET status='interrupted',error='Core restarted before outcome was confirmed',updated_at=? WHERE status IN ('running','queued','awaiting_approval')").run(now());
   }
   close() { this.db.close(); }
   aiSpent() { return this.db.prepare('SELECT COALESCE(SUM(amount_micros),0) AS amount FROM ai_usage').get().amount; }
@@ -90,7 +90,7 @@ export class Store {
   stopped() { return this.db.prepare("SELECT value FROM settings WHERE key='stopped'").get().value === '1'; }
   stop() {
     this.db.prepare("UPDATE settings SET value='1' WHERE key='stopped'").run();
-    this.db.prepare("UPDATE jobs SET status='cancelled',updated_at=? WHERE status='queued'").run(now());
+    this.db.prepare("UPDATE jobs SET status='cancelled',updated_at=? WHERE status IN ('queued','awaiting_approval')").run(now());
     this.event(null, 'stop', 'Remote emergency stop activated');
   }
   resume() { this.db.prepare("UPDATE settings SET value='0' WHERE key='stopped'").run(); this.event(null, 'resume', 'Locally resumed'); }

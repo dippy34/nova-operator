@@ -4,6 +4,8 @@ This is an **implementation**, not an architectural mockup. It has a native iOS 
 
 ## Implemented / not implemented
 
+**Reviewed computer control addition:** [App-scoped Mac sessions](COMPUTER-CONTROL.md) now implement screen capture and reviewed mouse/keyboard input. The Brain runs in a negatively tested OS sandbox and uses Core's API broker. This expands the earlier read-only/text-only checkpoints below; unrestricted unattended control and coding-agent supervision remain disabled. The current verification checkpoint is maintained in the computer-control guide.
+
 **Claude chat addition:** The native client and Core now include bounded text-only Claude conversation. See [Claude setup and cost controls](CLAUDE-SETUP.md). The signed update built and installed on Matthew's iPhone, and all 15 backend tests passed. A real authenticated job through running Core returned a Haiku 5.5 reply using 156 input / 18 output tokens (estimated $0.000025). Its temporary setup credential was revoked. Matthew then confirmed native phone chat works; Core independently recorded the paired iPhone's successful Claude request (134 input / 25 output tokens, estimated $0.000026). This verifies the native phone-to-Claude round trip. It does not enable AI planning or computer control.
 
 | Today (v0.1) | Future phases |
