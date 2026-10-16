@@ -23,9 +23,9 @@ The iPhone must reach Nova Core on the Mac without inbound ports. The original d
 ## Consequences
 
 - Third-party dependency on Tailscale, and the iOS VPN profile must be active.
-- No offline command queue in v1: if the Mac is off, the phone queues locally.
+- No server-side offline command queue in v1: if the Mac is off, the phone must visibly show the job as **not submitted** and preserve an unsent draft. iOS background suspension means local queued drafts are not guaranteed to be delivered until the app runs again. Durable offline submission requires the later relay.
 - Much less to build before Phase 1 is usable.
 
 ## Objections
 
-None yet. See [open question 3](../open-questions.md).
+- **ChatGPT, 2026-10-16:** `queues locally` is ambiguous; do not imply reliable delivery while an iOS app is suspended. Expose offline and unsent states in the native app. See [open question 3](../open-questions.md).
