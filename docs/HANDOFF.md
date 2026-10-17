@@ -28,6 +28,10 @@ Do not ask for routine implementation permission. Matthew must perform physical 
 - The Mac app still embeds absolute checkout/runtime/data paths. It is not a self-contained beta download, and the local Apple Development signature is not a customer distribution solution.
 - B1 now adds a Mac connection check and a support report. The check reads existing setup without creating/migrating it, makes unauthenticated health/auth GETs on loopback and the private HTTPS origin, checks Tailscale and native permission status, and never changes settings or executes desktop actions. It does not validate a provider key or phone connectivity.
 
+## Latest billing question
+
+During the transfer Matthew asked whether Claude Code could use API billing instead of subscription session usage. This was a question; no billing/login/key changes or paid coding task were made. Nova itself already uses the existing Claude API key. [Claude Code authentication docs](https://code.claude.com/docs/en/authentication) document Console/API authentication in the standalone CLI and state that Desktop/cloud do not read `ANTHROPIC_API_KEY` or `apiKeyHelper`. The direct API-key path is therefore the CLI or an editor integration that wraps it, not setting an environment variable on the prepared Desktop environment. Existing project instructions and local files work with either frontend. Do not confuse Nova runtime billing, Claude Code subscription usage, Console purchased credits and Desktop extra usage. Confirm the desired frontend before changing this setup, and never print the existing key.
+
 ## Code map
 
 | Location | Responsibility |
