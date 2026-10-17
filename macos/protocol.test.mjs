@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {existsSync,readFileSync,writeFileSync} from 'node:fs';
+import {existsSync,readFileSync} from 'node:fs';
 import {randomBytes} from 'node:crypto';
 import {join,dirname} from 'node:path';
 import {binary,socketPath,operatorRequest,signedEnvelope} from '../core/computer.mjs';
 
-test('signed native executor denies forged, expired, replayed and unsupported input before GUI access',{skip:process.platform!=='darwin'||!existsSync(socketPath)},async()=>{
- const keyFile=join(dirname(dirname(dirname(dirname(binary)))),'operator.key');
- if(!existsSync(keyFile))writeFileSync(keyFile,randomBytes(32),{mode:0o600,flag:'wx'});
+const keyFile=join(dirname(dirname(dirname(dirname(binary)))),'operator.key');
+// A clean checkout may share the user's socket path with a different installation.
+// Never invent a new key or probe that installation without this checkout's app/key.
+const nativeReady=process.platform==='darwin'&&existsSync(binary)&&existsSync(keyFile)&&existsSync(socketPath);
+test('signed native executor denies forged, expired, replayed and unsupported input before GUI access',{skip:nativeReady?false:'Requires this checkout’s built app, existing key and running native helper'},async()=>{
  const key=readFileSync(keyFile);
  const rejected=async envelope=>{
   const response=await operatorRequest({command:'execute',envelope},{timeout:10000});

@@ -16,6 +16,7 @@ Status: Source and handoff implemented; hosted CI remains outstanding. Local val
 - [x] Keep a single beta tracker, this plan, and an agent handoff in the repository.
 - [x] Record the distinction between automated tests, native compilation, installed builds and real device behavior.
 - [x] Add a handoff maintenance rule to `AGENTS.md`.
+- [x] Run tests from an isolated source checkout without private state. 77 passed; the native integration test explicitly skipped until that checkout has its own app/key and a running helper. The installed development checkout passes all 78 tests.
 - [ ] Add hosted continuous integration for backend tests, voice state tests and unsigned native builds. Local runs are currently the evidence.
 
 ## B1 — Reliability and support

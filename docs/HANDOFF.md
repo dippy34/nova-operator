@@ -55,7 +55,7 @@ xcodebuild -project ios/Nova.xcodeproj -scheme Nova \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
-For the signed Mac build, supply the existing local `NOVA_MAC_SIGN_IDENTITY` without committing it, run `npm run operator:build`, then run the built executable with `self-test`. Native protocol tests run only when the helper is available; report any skipped tests. Do not grant permissions automatically or use an ad-hoc replacement identity that loses the working grants.
+For the signed Mac build, supply the existing local `NOVA_MAC_SIGN_IDENTITY` without committing it, run `npm run operator:build`, then run the built executable with `self-test`. Native protocol tests run only when this checkout has its built app and existing key and the helper is available; report any skipped tests. A fresh checkout must never create a key for another running installation. Do not grant permissions automatically or use an ad-hoc replacement identity that loses the working grants.
 
 Use `npm run diagnostics` for human-readable results. The normal JSON report omits keys, codes, hostnames/IPs, account/device names, folder paths, task text, screenshots and raw logs. It is safe by construction for this defined set of fields; do not extend it by dumping objects or exception messages. Nothing uploads automatically. The Mac setup UI offers **Check Connection**, report preview and **Copy Support Report**.
 
@@ -72,6 +72,7 @@ These checks ran locally on 2026-10-16. Automated providers were mocked; no paid
 | Full suite after diagnostics integration | 78 tests passed; 0 failed, 0 skipped; includes running native protocol rejection tests |
 | Updated signed Mac app build/self-test | Built and signed with the existing local identity; signature verification and native negative-key/range self-test passed; installed with Accessibility and Screen Recording retained |
 | Running Mac’s connection check and UI | All 12 Mac checks passed. Native UI check, report preview, copy confirmation and individual accessibility elements verified. This does not verify phone/AI behavior |
+| Isolated source checkout without private app/data/key files | 77 tests passed, 1 native integration test explicitly skipped. The initial clean-clone run failed because the old test created a missing local key; its prerequisite guard is fixed. The real installed checkout still passes all 78 tests, including native rejection checks |
 | Real phone speech/Stop/takeover acceptance | Outstanding |
 
 ## Next bounded task
