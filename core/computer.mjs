@@ -1,19 +1,16 @@
 import {connect} from 'node:net';
 import {existsSync,writeFileSync,readFileSync,chmodSync} from 'node:fs';
 import {randomBytes,createHmac} from 'node:crypto';
-import {homedir} from 'node:os';
-import {resolve,dirname,join} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {paths} from './paths.mjs';
 import {runAgent,agentCost,systemFor} from './agent.mjs';
 import {AI_BUDGET_MICROS} from './ai.mjs';
 import {runOpenAIAgent,openaiCost} from './openai.mjs';
 import {keys,selectedProvider} from './keys.mjs';
 import {readAccess,checkAction,FILE_TOOLS,OPEN_APP_TOOL,fileTool,findApp} from './policy.mjs';
 
-const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-export const binary=join(root,'.nova-data','Nova Operator.app','Contents','MacOS','NovaOperator');
-const keyFile=join(root,'.nova-data','operator.key');
-export const socketPath=join(homedir(),'Library','Application Support','Nova Operator','operator.sock');
+export const binary=paths.operatorBinary;
+const keyFile=paths.operatorKey;
+export const socketPath=paths.socket;
 export const TURN_RESERVATION_MICROS=300_000; // Upper bound for one Sonnet turn, settled to actual usage.
 const NOT_RUNNING='Nova Operator is not running on the Mac. Run npm run operator:install, or open Nova Operator.app.';
 const fail=text=>{throw new Error(text);};

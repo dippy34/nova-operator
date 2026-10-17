@@ -1,12 +1,12 @@
-import { resolve } from 'node:path';
 import { Store } from './db.mjs';
+import { paths } from './paths.mjs';
 import { IMESSAGE_HANDLE } from './work.mjs';
 import { keys, PROVIDERS, providerStatus, testKey } from './keys.mjs';
 import { readAccess } from './policy.mjs';
 import { tailscaleStatus, enableServe } from './tailscale.mjs';
 import { computerName, pairingLink } from './setup.mjs';
 import { collectDiagnostics, formatDiagnostics } from './diagnostics.mjs';
-const dbFile = resolve(process.env.NOVA_DB ?? './.nova-data/nova.sqlite');
+const dbFile = paths.db;
 const args = process.argv.slice(2);
 const json = args.includes('--json');
 const [command, ...rest] = args.filter(a => a !== '--json');
@@ -18,7 +18,7 @@ const readStdin = async () => { let text = ''; for await (const chunk of process
 
 try {
   if (command === 'diagnostics') {
-    const report = await collectDiagnostics({ dbFile, port: Number(process.env.NOVA_PORT ?? 8787) });
+    const report = await collectDiagnostics({ dbFile, port: paths.port });
     out(report, formatDiagnostics(report));
   } else if (command === 'pair') {
     const owner = rest.includes('--owner');

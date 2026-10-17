@@ -499,7 +499,8 @@ enum CoreCLI {
                 process.executableURL=URL(fileURLWithPath:node)
                 process.arguments=[root+"/core/cli.mjs"]+arguments+["--json"]
                 process.currentDirectoryURL=URL(fileURLWithPath:root)
-                process.environment=["HOME":NSHomeDirectory(),"PATH":"/usr/bin:/bin:/usr/sbin:/sbin","NOVA_DB":data+"/nova.sqlite"]
+                // Core resolves its key, logs and database from NOVA_DATA_DIR (core/paths.mjs).
+                process.environment=["HOME":NSHomeDirectory(),"PATH":"/usr/bin:/bin:/usr/sbin:/sbin","NOVA_DATA_DIR":data,"NOVA_DB":data+"/nova.sqlite"]
                 process.standardOutput=output; process.standardError=FileHandle.nullDevice; process.standardInput=stdin
                 do { try process.run() } catch { done.resume(returning:["error":"Could not start Nova Core's setup tool."]); return }
                 if let input { stdin.fileHandleForWriting.write(Data(input.utf8)) }

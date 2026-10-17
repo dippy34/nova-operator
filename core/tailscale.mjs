@@ -3,6 +3,7 @@
 import {execFile} from 'node:child_process';
 import {existsSync} from 'node:fs';
 import {promisify} from 'node:util';
+import {paths} from './paths.mjs';
 
 const execAsync=promisify(execFile);
 // Without a terminal, Tailscale.app's binary starts its GUI instead of acting as the CLI.
@@ -22,7 +23,7 @@ export function serveURL(serve,port){
   return null;
 }
 
-export async function tailscaleStatus(port=Number(process.env.NOVA_PORT??8787),{exec=run,binary=tailscaleBinary()}={}){
+export async function tailscaleStatus(port=paths.port,{exec=run,binary=tailscaleBinary()}={}){
   if(!binary)return {installed:false,running:false,url:null,dnsName:null};
   const json=async args=>{try{return JSON.parse((await exec(binary,args,{timeout:5000})).stdout);}catch{return null;}};
   const [status,serve]=await Promise.all([json(['status','--json']),json(['serve','status','--json'])]);
@@ -31,7 +32,7 @@ export async function tailscaleStatus(port=Number(process.env.NOVA_PORT??8787),{
 }
 
 /// Publishes Core to the tailnet only. Tailscale may ask to enable HTTPS for the tailnet first.
-export async function enableServe(port=Number(process.env.NOVA_PORT??8787),{exec=run,binary=tailscaleBinary()}={}){
+export async function enableServe(port=paths.port,{exec=run,binary=tailscaleBinary()}={}){
   if(!binary)throw new Error('Install Tailscale on this Mac first: https://tailscale.com/download/mac');
   try{await exec(binary,['serve','--bg','--https=443',`http://127.0.0.1:${port}`],{timeout:20000});}
   catch(error){

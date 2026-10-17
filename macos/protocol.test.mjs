@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync,readFileSync} from 'node:fs';
 import {randomBytes} from 'node:crypto';
-import {join,dirname} from 'node:path';
 import {binary,socketPath,operatorRequest,signedEnvelope} from '../core/computer.mjs';
+import {paths} from '../core/paths.mjs';
 
-const keyFile=join(dirname(dirname(dirname(dirname(binary)))),'operator.key');
+const keyFile=paths.operatorKey;
 // A clean checkout may share the user's socket path with a different installation.
 // Never invent a new key or probe that installation without this checkout's app/key.
 const nativeReady=process.platform==='darwin'&&existsSync(binary)&&existsSync(keyFile)&&existsSync(socketPath);

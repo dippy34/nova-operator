@@ -2,7 +2,8 @@ import {execFileSync} from 'node:child_process';
 import {mkdirSync,writeFileSync,existsSync,unlinkSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {dirname,join} from 'node:path';
-import {binary,permissions} from '../core/computer.mjs';
+import {permissions} from '../core/computer.mjs';
+import {paths} from '../core/paths.mjs';
 
 if(process.platform!=='darwin')throw new Error('Nova Operator requires macOS');
 const label='dev.nova.operator.macos';
@@ -15,7 +16,7 @@ const loaded=()=>{try{launch('print',target);return true;}catch{return false;}};
 const wait=ms=>new Promise(ok=>setTimeout(ok,ms));
 const command=process.argv[2];
 if(command==='install'){
-  if(!existsSync(binary))throw new Error('Build the signed Nova Operator app first: npm run operator:build');
+  if(!existsSync(paths.operatorBinary))throw new Error('Build the signed Nova Operator app first: npm run operator:build');
   if(loaded())launch('bootout',target);
   mkdirSync(dirname(plist),{recursive:true});
   // launchd starts the app executable directly, so macOS treats Nova Operator as its
@@ -24,7 +25,7 @@ if(command==='install'){
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${label}</string>
-<key>ProgramArguments</key><array><string>${xml(binary)}</string></array>
+<key>ProgramArguments</key><array><string>${xml(paths.operatorBinary)}</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
 <key>LimitLoadToSessionType</key><string>Aqua</string>

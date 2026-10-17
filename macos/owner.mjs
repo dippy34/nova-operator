@@ -1,5 +1,6 @@
 import {Store} from '../core/db.mjs';
-const store=new Store(process.env.NOVA_DB??'.nova-data/nova.sqlite');
+import {paths} from '../core/paths.mjs';
+const store=new Store(paths.db);
 try{
   const id=process.argv[2];
   if(id==='disable')store.db.prepare("DELETE FROM settings WHERE key='computer_owner'").run();

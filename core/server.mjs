@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Store } from './db.mjs';
+import { paths } from './paths.mjs';
 import { createAI } from './ai.mjs';
 import { createComputer, permissions, requestPermissions } from './computer.mjs';
 import { createWork } from './work.mjs';
@@ -13,7 +14,6 @@ import { keys as defaultKeys, PROVIDERS, providerStatus, selectedProvider, testK
 import { computerName, createPairingGuard, installedApps, listFolders, setupStatus } from './setup.mjs';
 
 const execFileAsync = promisify(execFile);
-const defaultDb = resolve(process.env.NOVA_DB ?? './.nova-data/nova.sqlite');
 const MAX_BODY = 8192;
 const types = new Set(['hello', 'mac.status', 'repo.status', 'ai.chat', 'computer.task']);
 const json = (res, status, object) => {
@@ -36,7 +36,7 @@ function cleanMessage(message) {
   return message.trim();
 }
 
-export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORKSPACE, executeOverride, aiOptions, computerOptions, workOptions, setupOptions = {} } = {}) {
+export function makeNova({ dbFile = paths.db, workspace = paths.workspace, executeOverride, aiOptions, computerOptions, workOptions, setupOptions = {} } = {}) {
   const store = new Store(dbFile);
   const keyStore = setupOptions.keyStore ?? defaultKeys;
   const keyTest = setupOptions.testKey ?? testKey;
@@ -286,7 +286,7 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const app = makeNova();
-  const port = await app.listen(Number(process.env.NOVA_PORT ?? 8787));
+  const port = await app.listen(paths.port);
   console.log(`Nova Core v0.1 listening on http://127.0.0.1:${port} (chat and autonomous computer control)`);
   console.log('Nova Operator service-context permissions: '+JSON.stringify(await permissions()));
   for (const signal of ['SIGINT', 'SIGTERM']) {

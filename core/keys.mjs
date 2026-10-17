@@ -4,20 +4,20 @@
 import {execFileSync,spawnSync} from 'node:child_process';
 import {readFileSync,statSync} from 'node:fs';
 import {parseEnv} from 'node:util';
-import {fileURLToPath} from 'node:url';
+import {paths} from './paths.mjs';
 
 export const PROVIDERS={
   anthropic:{label:'Claude',company:'Anthropic',pattern:/^sk-ant-[A-Za-z0-9_-]{20,300}$/,legacy:'ANTHROPIC_API_KEY',keysURL:'https://console.anthropic.com/settings/keys'},
   openai:{label:'OpenAI',company:'OpenAI',pattern:/^sk-[A-Za-z0-9_-]{20,400}$/,keysURL:'https://platform.openai.com/api-keys'}
 };
 const SERVICE='dev.nova.provider';
-const legacyFile=fileURLToPath(new URL('../.env.local',import.meta.url));
+const legacyFile=paths.legacyEnv;
 const CACHE_MS=30_000;
 const fail=text=>{throw new Error(text);};
 
 function legacyKey(provider,file){
   const name=PROVIDERS[provider]?.legacy;
-  if(!name)return '';
+  if(!name||!file)return '';
   try{
     if(statSync(file).mode&0o077)return '';
     const key=parseEnv(readFileSync(file,'utf8'))[name];
