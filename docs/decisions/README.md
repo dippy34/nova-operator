@@ -15,6 +15,7 @@ One file per significant architectural choice. Statuses: `Proposed`, `Accepted`,
 | [0009](0009-autonomous-computer-control.md) | Autonomous whole-Mac control with Claude computer use | Accepted |
 | [0010](0010-work-agents-and-takeover.md) | Background agents, schedules, unlimited spending and iPhone take-over | Proposed |
 | [0011](0011-setup-and-range.md) | Onboarding, access range and Keychain provider keys | Proposed |
+| [0012](0012-beta-diagnostics.md) | Read-only Mac connection checks and a minimal support report | Proposed |
 
 ## Template
 

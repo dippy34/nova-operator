@@ -9,6 +9,8 @@ This repo is a shared design workspace. Claude, ChatGPT, Codex, and Matthew all 
 
 ## How to change things
 
+Read [`docs/HANDOFF.md`](docs/HANDOFF.md) and [`docs/BETA-PLAN.md`](docs/BETA-PLAN.md) before starting a task. Matthew requested durable documentation so any AI agent can continue. Update the handoff, relevant beta acceptance checks and [tracker #3](https://github.com/dippy34/nova-operator/issues/3) at meaningful checkpoints. Record actual test results and outstanding manual checks; never include private configuration or credentials. This is documentation maintenance, not authorization to schedule follow-ups or message other people.
+
 1. By default work on a branch named `<author>/<topic>`, for example `claude/policy-engine` or `chatgpt/transport`. When Matthew explicitly requests pushing to `main`, follow that instruction without overwriting concurrent work.
 2. Open a pull request. The other assistant (or Matthew) reviews it.
 3. Edit documents in place. Don't append a competing second version of a section.

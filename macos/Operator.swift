@@ -515,6 +515,12 @@ enum CoreCLI {
 
 struct PairingCode { let short: String; let link: String?; let expires: Date; let owner: Bool }
 struct PairedDevice: Identifiable { let id: String; let name: String; let owner: Bool; let created: String }
+struct ConnectionCheck: Identifiable {
+    let id: String, title: String, status: String, message: String
+    let hint: String?
+    var symbol: String { status == "pass" ? "checkmark.circle.fill" : status == "fail" ? "xmark.circle.fill" : status == "warning" ? "exclamationmark.triangle.fill" : "questionmark.circle" }
+    var color: Color { status == "pass" ? .green : status == "fail" ? .red : status == "warning" ? .orange : .secondary }
+}
 
 @MainActor
 final class SetupModel: ObservableObject {
@@ -538,6 +544,10 @@ final class SetupModel: ObservableObject {
     @Published var keyProvider="anthropic"
     @Published var key=""
     @Published var keyResult: (ok: Bool, text: String)?
+    @Published var connectionChecks: [ConnectionCheck]=[]
+    @Published var diagnosticReport=""
+    @Published var checkingConnection=false
+    @Published var reportCopied=false
     @Published var now=Date()
     var loaded=false
 
@@ -580,6 +590,31 @@ final class SetupModel: ObservableObject {
         let r=await perform(["key","set",keyProvider],input:value)
         if let error=r["error"] as? String { keyResult=(false,error); notice=nil }
         else if let test=r["test"] as? [String:Any] { keyResult=(test["ok"] as? Bool ?? false,"Saved in the Keychain. "+(test["message"] as? String ?? "")) }
+    }
+    func checkConnection() async {
+        guard !busy else { return }
+        busy=true; checkingConnection=true; reportCopied=false
+        defer { busy=false; checkingConnection=false }
+        let result=await CoreCLI.run(["diagnostics"])
+        guard result["schemaVersion"] as? Int == 1,
+              let rows=result["checks"] as? [[String:Any]],
+              let data=try? JSONSerialization.data(withJSONObject:result,options:[.prettyPrinted,.sortedKeys]) else {
+            connectionChecks=[]; diagnosticReport=""
+            notice="The connection check could not finish. Reopen Nova on the Mac and try again."
+            return
+        }
+        connectionChecks=rows.compactMap { row in
+            guard let id=row["id"] as? String, let title=row["title"] as? String,
+                  let status=row["status"] as? String, let message=row["message"] as? String else { return nil }
+            return ConnectionCheck(id:id,title:title,status:status,message:message,hint:row["hint"] as? String)
+        }
+        diagnosticReport=String(decoding:data,as:UTF8.self)
+        notice=nil
+    }
+    func copyDiagnosticReport() {
+        guard !diagnosticReport.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        reportCopied=NSPasteboard.general.setString(diagnosticReport,forType:.string)
     }
 }
 
@@ -647,6 +682,7 @@ struct SetupView: View {
     @ObservedObject var model: SetupModel
     @State var confirmRevoke: PairedDevice?
     @State var confirmFull=false
+    @State var showConnectionChecks=false
     let timer=Timer.publish(every:1,on:.main,in:.common).autoconnect()
     var body: some View {
         ScrollView {
@@ -667,6 +703,7 @@ struct SetupView: View {
                     }
                 }
                 connection
+                diagnosticsCard
                 pairing
                 rangeCard
                 permissionsCard
@@ -735,6 +772,58 @@ struct SetupView: View {
                 Text(model.ownerCode ? "This iPhone will control the Mac. If another phone controls it, control transfers to this one." : "Conversation only. Turn this on if you want this iPhone to control the Mac, even when Whole Mac access is already enabled.")
                     .font(.callout).foregroundStyle(.secondary)
                 Button("Show Pairing Code") { Task { await model.pair() } }.controlSize(.large).disabled(model.busy)
+            }
+        }
+    }
+
+    var diagnosticsCard: some View {
+        SetupCard(title:"Connection check",symbol:"stethoscope",done:!model.connectionChecks.isEmpty && model.connectionChecks.allSatisfy { $0.status == "pass" }) {
+            Text("Find out what needs attention on this Mac. This check won’t change your settings or run an AI task.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button(model.checkingConnection ? "Checking…" : "Check Connection") {
+                    Task {
+                        await model.checkConnection()
+                        showConnectionChecks=model.connectionChecks.contains { $0.status != "pass" }
+                    }
+                }
+                    .disabled(model.busy)
+                if model.checkingConnection { ProgressView().controlSize(.small).accessibilityLabel("Checking the connection") }
+                if !model.diagnosticReport.isEmpty {
+                    Button(model.reportCopied ? "Report Copied" : "Copy Support Report") { model.copyDiagnosticReport() }
+                        .disabled(model.checkingConnection)
+                }
+            }
+            if !model.connectionChecks.isEmpty {
+                Text(model.connectionChecks.allSatisfy { $0.status == "pass" } ? "All \(model.connectionChecks.count) Mac checks passed." : "Some checks need attention.")
+                    .font(.callout.bold())
+                DisclosureGroup("Show all checks",isExpanded:$showConnectionChecks) {
+                    VStack(alignment:.leading,spacing:12) {
+                        ForEach(model.connectionChecks) { check in
+                            HStack(alignment:.top,spacing:10) {
+                                Image(systemName:check.symbol).foregroundStyle(check.color).frame(width:18)
+                                VStack(alignment:.leading,spacing:3) {
+                                    Text(check.title).font(.callout.bold())
+                                    Text(check.message).font(.callout)
+                                    if let hint=check.hint { Text(hint).font(.callout).foregroundStyle(.secondary) }
+                                }
+                            }
+                            .accessibilityElement(children:.ignore)
+                            .accessibilityLabel(check.title+". "+check.message+(check.hint.map { " "+$0 } ?? ""))
+                            .accessibilityValue(check.status)
+                        }
+                    }.padding(.top,8).accessibilityElement(children:.contain)
+                }
+                Text("Mac checks only. Confirm the iPhone connection and try an AI task separately.")
+                    .font(.callout).foregroundStyle(.secondary)
+                DisclosureGroup("Preview support report") {
+                    ScrollView {
+                        Text(model.diagnosticReport).font(.caption.monospaced()).textSelection(.enabled)
+                            .frame(maxWidth:.infinity,alignment:.leading)
+                    }.frame(maxHeight:180)
+                }
+                Text("The report contains check results and runtime versions. It excludes keys, codes, hostnames, device names, task text, screenshots and logs. Nothing is sent automatically.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }

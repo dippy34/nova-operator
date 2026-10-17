@@ -5,17 +5,22 @@ import { keys, PROVIDERS, providerStatus, testKey } from './keys.mjs';
 import { readAccess } from './policy.mjs';
 import { tailscaleStatus, enableServe } from './tailscale.mjs';
 import { computerName, pairingLink } from './setup.mjs';
+import { collectDiagnostics, formatDiagnostics } from './diagnostics.mjs';
 const dbFile = resolve(process.env.NOVA_DB ?? './.nova-data/nova.sqlite');
-const store = new Store(dbFile);
 const args = process.argv.slice(2);
 const json = args.includes('--json');
 const [command, ...rest] = args.filter(a => a !== '--json');
+// Diagnostics must also work before first setup, without creating or migrating a database.
+const store = command === 'diagnostics' ? null : new Store(dbFile);
 const out = (object, text) => console.log(json ? JSON.stringify(object) : text);
 const failed = message => { if (json) console.log(JSON.stringify({ error: message })); else console.error(message); process.exitCode = 1; };
 const readStdin = async () => { let text = ''; for await (const chunk of process.stdin) { text += chunk; if (text.length > 2000) break; } return text.trim(); };
 
 try {
-  if (command === 'pair') {
+  if (command === 'diagnostics') {
+    const report = await collectDiagnostics({ dbFile, port: Number(process.env.NOVA_PORT ?? 8787) });
+    out(report, formatDiagnostics(report));
+  } else if (command === 'pair') {
     const owner = rest.includes('--owner');
     const invitation = store.createInvitation({ owner });
     const { url } = await tailscaleStatus();
@@ -79,7 +84,7 @@ try {
   } else if (command === 'imessage') {
     console.log(store.setting('imessage_to') ? `Reports are texted to ${store.setting('imessage_to')}.` : 'Reports are not texted.');
   } else {
-    failed('Usage: node core/cli.mjs pair [--owner] | setup | serve on | key set|remove|test anthropic|openai | key import | provider anthropic|openai | access chat|full | resume | devices | revoke DEVICE_ID | imessage [+NUMBER|EMAIL|off]  (add --json for machine output)');
+    failed('Usage: node core/cli.mjs diagnostics | pair [--owner] | setup | serve on | key set|remove|test anthropic|openai | key import | provider anthropic|openai | access chat|full | resume | devices | revoke DEVICE_ID | imessage [+NUMBER|EMAIL|off]  (add --json for machine output)');
   }
 } catch (error) { failed(error.message); }
-store.close();
+store?.close();

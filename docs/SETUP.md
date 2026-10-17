@@ -32,9 +32,17 @@ A USB cable does not pair the app. Pairing is wireless.
 - **Emergency stop** on the phone or Control-Option-S on the Mac still stops everything. Resume only from the Mac (`npm run resume` or the button in Set Up Nova).
 - Change or revoke range, keys and devices any time from Home or the Mac window.
 
+## Connection problems
+
+On the Mac, open **Set Up Nova… → Connection check → Check Connection**. It checks Core, private HTTPS and pairing protection, Tailscale, saved setup, the controlling device, required Mac permissions and stop state. It does not change settings, resume Nova, access the screen, run an AI task or test a provider key. Follow the specific result, then check the connection on your phone separately.
+
+**Preview support report** shows the exact text before **Copy Support Report** copies it. The report excludes keys, codes, hostnames/addresses, device names, task content, screenshots and raw logs. It stays local until you choose to share it. Never post your pairing QR, API key or raw database in a public issue.
+
+For developer setup, `npm run diagnostics` prints the same checks. `node core/cli.mjs diagnostics --json` returns the versioned report without creating or migrating a database.
+
 ## Commands
 
-`node core/cli.mjs pair [--owner] [--json]` · `setup --json` · `serve on` · `key set|remove|test anthropic|openai` (key on stdin) · `key import` · `provider anthropic|openai` · `access chat|full` · `resume` · `devices` · `revoke DEVICE_ID` · `imessage [+NUMBER|EMAIL|off]`
+`node core/cli.mjs pair [--owner] [--json]` · `setup --json` · `diagnostics [--json]` · `serve on` · `key set|remove|test anthropic|openai` (key on stdin) · `key import` · `provider anthropic|openai` · `access chat|full` · `resume` · `devices` · `revoke DEVICE_ID` · `imessage [+NUMBER|EMAIL|off]`
 
 ## Current users
 

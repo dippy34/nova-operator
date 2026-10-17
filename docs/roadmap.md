@@ -1,5 +1,7 @@
 # Roadmap
 
+For current implementation priorities and tested beta gates, use [BETA-PLAN.md](BETA-PLAN.md) and [HANDOFF.md](HANDOFF.md). The phases below describe the long-term design; they are not a list of implemented or verified capabilities.
+
 Ten phases, easiest to hardest. Phases 1 to 3 already give a genuinely useful Nova: an operator that supervises Claude and Codex unattended, runs sandboxed CLI work, and asks for approval from the phone.
 
 | Phase | Deliverables | Depends on | Acceptance tests |
