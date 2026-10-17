@@ -12,6 +12,8 @@ The core idea is **preauthorized autonomy**: before leaving, you grant Nova spec
 
 **Start here:** [Set up Nova](docs/SETUP.md). The native app is under `ios/`, and Mac Core under `core/`.
 
+**Continuing in Claude Code:** open the existing `~/Projects/nova-operator` folder. Read the [starting task](docs/CLAUDE-CODE-START.md), [handoff](docs/HANDOFF.md) and [product context](docs/PRODUCT-CONTEXT.md). The tracked `CLAUDE.md` loads the shared instructions; private machine notes remain local and ignored.
+
 If setup fails, open **Set Up Nova… → Connection check** on the Mac. **Check Connection** explains local Core, private networking, pairing ownership and Mac permission problems. Preview and explicitly copy the support report if needed; it excludes keys, pairing codes, addresses, names, task content, screenshots and logs. Nothing is sent automatically. Developers can also run `npm run diagnostics` or `node core/cli.mjs diagnostics --json`. A green Mac check does not verify the iPhone connection or an AI task.
 
 ## Where things are

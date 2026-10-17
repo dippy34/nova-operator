@@ -2,7 +2,13 @@
 
 Start here when continuing Nova with another AI agent. This file and the source on GitHub are the durable context; do not require access to the original chat.
 
-Last updated: 2026-10-16 by Codex. Read [AGENTS.md](../AGENTS.md), [BETA-PLAN.md](BETA-PLAN.md) and [tracker #3](https://github.com/dippy34/nova-operator/issues/3) before editing.
+Last updated: 2026-10-16 by Codex for Matthew’s transfer to Claude Code. Read [AGENTS.md](../AGENTS.md), [PRODUCT-CONTEXT.md](PRODUCT-CONTEXT.md), [BETA-PLAN.md](BETA-PLAN.md) and [tracker #3](https://github.com/dippy34/nova-operator/issues/3) before editing. [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md) has the ready-to-paste continuation task.
+
+## Local project location
+
+The canonical checkout is now `~/Projects/nova-operator`. The complete repository and ignored local data/signing configuration were moved together. Core and native Operator LaunchAgents were reinstalled from the new location, and the Mac app was rebuilt with the same signing identity and new paths; the Applications copy was updated. Existing pairing, access range, provider storage and Mac grants were retained. All 12 Mac diagnostic checks pass after relocation; SQLite integrity passes. Private rollback data and machine details stay in `.nova-data/` and ignored `CLAUDE.local.md`.
+
+This is a development-folder relocation, not a self-contained distribution. B2 remains open. The root `CLAUDE.md` imports durable project context; no hidden chat transcript is needed. The existing Claude desktop app is installed on Matthew’s Mac; a standalone Claude CLI was not found. A local Claude Code environment named **Nova** has been created and selected for the new folder on `main`, with Worktree off. No coding task has been submitted by this transfer.
 
 ## Current objective and authority
 
@@ -73,9 +79,13 @@ These checks ran locally on 2026-10-16. Automated providers were mocked; no paid
 | Updated signed Mac app build/self-test | Built and signed with the existing local identity; signature verification and native negative-key/range self-test passed; installed with Accessibility and Screen Recording retained |
 | Running Mac’s connection check and UI | All 12 Mac checks passed. Native UI check, report preview, copy confirmation and individual accessibility elements verified. This does not verify phone/AI behavior |
 | Isolated source checkout without private app/data/key files | 77 tests passed, 1 native integration test explicitly skipped. The initial clean-clone run failed because the old test created a missing local key; its prerequisite guard is fixed. The real installed checkout still passes all 78 tests, including native rejection checks |
+| Projects relocation | Both LaunchAgents and both app configurations point to Projects; same signed Mac identity, native self-test and all 12 diagnostics pass; SQLite integrity and owner/range state preserved |
+| Revalidation from the relocated checkout | All 78 backend tests and 11 voice tests passed; iOS unsigned build succeeded from the new path. No phone reinstall or live paid AI task was performed |
 | Real phone speech/Stop/takeover acceptance | Outstanding |
 
 ## Next bounded task
+
+Implementation issue: [B2 #4](https://github.com/dippy34/nova-operator/issues/4), with a first bounded refactor and acceptance checks.
 
 Start **B2: a self-contained Mac application** in an isolated output directory. First extract runtime/data path configuration so Core, the native helper, CLI and login service agree. Preserve the existing development defaults and the live install. Bundle only explicit runtime resources plus a pinned verified Node binary and its license. Never copy `.env.local`, `.nova-data`, signing files, private databases or Keychain contents into an app or archive.
 

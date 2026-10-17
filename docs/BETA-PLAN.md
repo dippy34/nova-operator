@@ -16,6 +16,7 @@ Status: Source and handoff implemented; hosted CI remains outstanding. Local val
 - [x] Keep a single beta tracker, this plan, and an agent handoff in the repository.
 - [x] Record the distinction between automated tests, native compilation, installed builds and real device behavior.
 - [x] Add a handoff maintenance rule to `AGENTS.md`.
+- [x] Prepare Claude Code imports, continuation prompt and product history; relocate the working checkout into Projects and verify its services, private setup, tests and build. This does not complete B2.
 - [x] Run tests from an isolated source checkout without private state. 77 passed; the native integration test explicitly skipped until that checkout has its own app/key and a running helper. The installed development checkout passes all 78 tests.
 - [ ] Add hosted continuous integration for backend tests, voice state tests and unsigned native builds. Local runs are currently the evidence.
 
@@ -34,7 +35,7 @@ Mac diagnostics do not prove the phone is connected, that a provider key works, 
 
 ## B2 — Self-contained Mac installation
 
-Status: Not started. This is the next independent coding milestone.
+Status: Not started. This is the next independent coding milestone; see [implementation issue #4](https://github.com/dippy34/nova-operator/issues/4).
 
 - [ ] Bundle a pinned, verified runtime and only the Core resources needed at runtime. A customer must not need a checkout, development Node or Xcode.
 - [ ] Separate immutable app resources from mutable Application Support data. Migrate existing installations with a backup and preserve pairing, keys, owner, chosen range, schedules and stop state.

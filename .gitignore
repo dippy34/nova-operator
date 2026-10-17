@@ -9,3 +9,7 @@ node_modules/
 ios/Signing.local.xcconfig
 
 .env.local
+
+CLAUDE.local.md
+
+.claude/settings.local.json
