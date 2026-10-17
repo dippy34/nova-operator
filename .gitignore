@@ -4,8 +4,8 @@ node_modules/
 *.xcuserstate
 *.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
-ios/NovaApp/Info.plist
 .DerivedData/
+.DerivedData-sim/
 ios/Signing.local.xcconfig
 
 .env.local

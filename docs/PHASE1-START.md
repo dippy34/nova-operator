@@ -1,5 +1,7 @@
 # Nova Phase 1 - first working vertical slice
 
+For the current install path (QR pairing, range, Keychain keys), start at [Set up Nova](SETUP.md). This page is the original Phase 1 checkpoint.
+
 This is an **implementation**, not an architectural mockup. It has a native iOS SwiftUI client, a Mac-hosted Node 22 service, one-use pairing, Keychain-backed device credentials, a SQLite WAL job/event journal, a read-only task executor and a remote emergency-stop endpoint. The iOS client polls for job results while the app is in the foreground.
 
 ## Implemented / not implemented

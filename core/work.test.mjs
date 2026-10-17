@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {Store} from './db.mjs';
 import {createComputer} from './computer.mjs';
 import {createWork,scheduleSpec,nextRun,MAX_PARALLEL,sendIMessage,IMESSAGE_HANDLE} from './work.mjs';
+import {memoryKeyStore} from './keys.mjs';
 
 const usage={input_tokens:100,output_tokens:20};
 const text=(t,stop='end_turn')=>({stop_reason:stop,usage,content:[{type:'text',text:t}]});
@@ -17,16 +18,17 @@ function fixture(answer){
   const dir=mkdtempSync(join(tmpdir(),'nova-work-')),store=new Store(join(dir,'db'));
   const owner=store.redeemInvitation(store.issueInvitation(),'owner');
   store.db.prepare("INSERT INTO settings(key,value) VALUES('computer_owner',?)").run(owner.id);
-  const bodies=[],calls=[],notes=[],spawned=[];
+  store.setSetting('access_level','full');
+  const bodies=[],calls=[],notes=[],spawned=[],keyStore=memoryKeyStore();
   const call=(body,{signal})=>{
     bodies.push(structuredClone(body));
     return Promise.race([answer(body,bodies.length),new Promise((ok,no)=>signal.addEventListener('abort',()=>no(new Error('Task cancelled')),{once:true}))]);
   };
   const run=async request=>{calls.push(request);return request.action==='screenshot'?{image:'anBn'}:{text:'OK'};};
-  const computer=createComputer(store,{run,call,permissionCheck:async()=>({installed:true,running:true,accessibility:true,screenRecording:true})});
+  const computer=createComputer(store,{run,call,keyStore,permissionCheck:async()=>({installed:true,running:true,accessibility:true,screenRecording:true})});
   const spawnImpl=(cmd,args)=>{const child={cmd,args,killed:false,on(){},kill(){child.killed=true;}};spawned.push(child);return child;};
   const texts=[],sms={ok:true};
-  const work=createWork(store,computer,{call,notify:(title,message)=>notes.push({title,message}),text:async(to,body)=>{texts.push({to,body});return sms.ok;},spawnImpl,tickMs:1e9,wakeMs:0});
+  const work=createWork(store,computer,{call,keyStore,notify:(title,message)=>notes.push({title,message}),text:async(to,body)=>{texts.push({to,body});return sms.ok;},spawnImpl,tickMs:1e9,wakeMs:0});
   return {store,owner,computer,work,bodies,calls,notes,spawned,texts,sms,async close(){await work.close();store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 const lastUser=body=>body.messages.at(-1).content.map(b=>b.text??'').join('');
@@ -212,10 +214,30 @@ test('emergency stop halts background agents and schedules',async()=>{
   }finally{await f.close();}
 });
 
-test('over HTTP, taking over ends Nova\'s task, and work can be listed and cancelled',async()=>{
+test('Just chat refuses Mac schedules and remote-control views, including schedules made earlier',async()=>{
+  const f=fixture(async()=>text('Checked.'));
+  try{
+    const {id}=f.work.addSchedule(f.owner.id,{title:'Inbox',task:'Check Mail',every_minutes:10,uses_computer:true});
+    f.store.setSetting('access_level','chat');
+    assert.throws(()=>f.work.addSchedule(f.owner.id,{title:'Desk',task:'Tidy',every_minutes:10,uses_computer:true}),/Just chat/);
+    f.work.addSchedule(f.owner.id,{title:'News',task:'Brief me',daily_at:'08:00'});
+    const {onTool}=f.work.tools(f.owner.id);
+    await assert.rejects(onTool('open_on_iphone',{view:'control'}),/Just chat/);
+    await assert.rejects(onTool('open_on_iphone',{view:'screen'}),/Just chat/);
+    assert.match(await onTool('open_on_iphone',{view:'work'}),/Opened the work view/);
+    f.store.db.prepare('UPDATE schedules SET next_ms=? WHERE id=?').run(Date.now()-1,id);
+    f.work.tick();
+    while(!f.work.status(f.owner.id).reports.length)await tick();
+    const [report]=f.work.status(f.owner.id).reports;
+    assert.equal(report.ok,false);assert.match(report.message,/Just chat/);
+    assert.equal(f.calls.length,0,'the Mac was never touched');assert.equal(f.bodies.length,0);
+  }finally{await f.close();}
+});
+
+test('over HTTP, taking over pauses Nova\'s task until Hand back, and work can be listed and cancelled',async()=>{
   const {makeNova}=await import('./server.mjs');
   const dir=mkdtempSync(join(tmpdir(),'nova-work-http-')),runs=[];
-  const app=makeNova({dbFile:join(dir,'db'),
+  const app=makeNova({dbFile:join(dir,'db'),setupOptions:{keyStore:memoryKeyStore()},
     computerOptions:{permissionCheck:async()=>({installed:true,running:true,accessibility:true,screenRecording:true}),
       run:async request=>{runs.push(request);return {text:'OK'};},
       call:(body,{signal})=>new Promise((_,no)=>signal.addEventListener('abort',()=>no(new Error('Task cancelled'))))},
@@ -223,18 +245,21 @@ test('over HTTP, taking over ends Nova\'s task, and work can be listed and cance
   try{
     const port=await app.listen(0),owner=app.store.redeemInvitation(app.store.issueInvitation(),'owner'),other=app.store.redeemInvitation(app.store.issueInvitation(),'other');
     app.store.db.prepare("INSERT INTO settings(key,value) VALUES('computer_owner',?)").run(owner.id);
+    app.store.setSetting('access_level','full');
     const req=(path,body,who=owner)=>fetch(`http://127.0.0.1:${port}${path}`,{method:body?'POST':'GET',headers:{authorization:`Bearer ${who.token}`,'content-type':'application/json'},body:body&&JSON.stringify(body)});
     const task=(await (await req('/v1/jobs',{type:'computer.task',message:'open Safari'})).json()).id;
     while(app.store.getJob(task,owner.id).status!=='running')await tick();
     await tick();
+    assert.deepEqual(await (await req('/v1/computer/takeover',{})).json(),{paused:true});
     const input=await req('/v1/computer/input',{action:'left_click',coordinate:[10,20]});
     assert.equal(input.status,200);
-    while(app.store.getJob(task,owner.id).status==='running')await tick();
-    assert.equal(app.store.getJob(task,owner.id).status,'cancelled');
-    assert.ok(app.store.events(task).some(e=>e.kind==='takeover'));
-    assert.deepEqual(runs.at(-1),{action:'left_click',direct:true,coordinate:[10,20]});
-    assert.equal((await (await req('/v1/status')).json()).computer.controlled,true);
+    assert.equal(app.store.getJob(task,owner.id).status,'running','the task waits instead of being cancelled');
+    assert.deepEqual(app.store.events(task).filter(e=>e.kind==='paused').length,1);
+    assert.deepEqual(runs.at(-1),{action:'left_click',direct:true,coordinate:[10,20],scope:{mode:'full'}});
+    const status=await (await req('/v1/status')).json();
+    assert.equal(status.computer.controlled,true);assert.equal(status.computer.paused,true);assert.equal(status.range,'full');
     assert.equal((await req('/v1/computer/input',{action:'left_click',coordinate:[1,1]},other)).status,409);
+    assert.equal((await req('/v1/computer/takeover',{},other)).status,403);
     app.work.addSchedule(owner.id,{title:'Brief',task:'news',daily_at:'08:00'});
     const work=await (await req('/v1/work')).json();
     assert.equal(work.schedules[0].title,'Brief');
@@ -243,5 +268,12 @@ test('over HTTP, taking over ends Nova\'s task, and work can be listed and cance
     assert.match((await (await req('/v1/work/cancel',{id:work.schedules[0].id})).json()).message,/Deleted/);
     assert.equal((await req('/v1/computer/release',{})).status,200);
     assert.equal((await (await req('/v1/status')).json()).computer.controlled,false);
+    assert.ok(app.store.events(task).some(e=>e.kind==='resumed'));
+    assert.equal((await req('/v1/work/agent',{title:'News',task:'brief me'})).status,201);
+    assert.equal((await req('/v1/work/schedule',{title:'Desk',task:'Tidy',every_minutes:10,uses_computer:true},other)).status,400);
+    assert.equal((await req('/v1/work/schedule',{title:'Brief',task:'news',daily_at:'08:00'})).status,201);
+    assert.equal((await req('/v1/computer/end',{})).status,200);
+    while(app.store.getJob(task,owner.id).status==='running')await tick();
+    assert.equal(app.store.getJob(task,owner.id).status,'cancelled');
   }finally{await app.close();rmSync(dir,{recursive:true,force:true});}
 });

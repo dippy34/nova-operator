@@ -40,6 +40,7 @@ Most of the plumbing exists today. The hard parts are effect descriptors, long-h
 | DRM-protected content | Appears blank in screen capture | None |
 | App Store distribution | Sandboxed apps can't control other apps | Notarized Developer ID build |
 | iOS background limits | No persistent background connection; no API for custom always-on wake words | APNs; foreground desk app |
+| USB-assisted pairing | Apple does not publish a supported API for an iOS app to talk to a Mac app over USB. `usbmuxd`/PeerTalk are undocumented; External Accessory needs MFi | Wireless Tailscale pairing. A cable does not pair Nova |
 | Screen Recording re-prompts | Behavior has changed across macOS 15.x and 26 (verify on target OS) | Detect in preflight |
 | Chrome default-profile debugging | Recent Chrome blocks `--remote-debugging-port` on the default profile | Dedicated profile, or extension-based control |
 | Third-party restrictions | Automation-forbidding terms, rate limits, apps that block accessibility | Respect and stop |

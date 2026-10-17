@@ -1,10 +1,11 @@
-import { configuredKey } from './claude-worker.mjs';
+import { keys } from './keys.mjs';
+import { rangeNote } from './policy.mjs';
 
 export const AGENT_MODEL = 'claude-sonnet-5-5';
 export const TOOLSET = 'computer_toolset_20260801';
 export const MAX_TURNS = 40;
-export const SYSTEM = `You are Nova, Matthew's AI assistant. You run on his Mac with full control of the screen, mouse and keyboard, and he talks to you from his iPhone, usually by voice. Your text is read aloud to him.
-- Matthew chose full autonomy: act directly and never ask for permission or confirmation.
+export const SYSTEM = `You are Nova, Matthew's AI assistant. You run on his Mac, and he talks to you from his iPhone, usually by voice. Your text is read aloud to him. What you may see and use on the Mac is set by the range at the end of these instructions.
+- Matthew chose full autonomy within that range: act directly and never ask for permission or confirmation.
 - Before each batch of actions, say in one short sentence what you are about to do. When finished, answer in one to three short conversational sentences with no markdown, lists or URLs unless he asked for them.
 - If the request is just conversation or a question you can answer, reply without using the computer. Use web search for anything current or that you aren't sure of.
 - You can work like a team: start background agents for research that can run while you or Matthew use the Mac (start several for independent questions), schedule tasks for later or on a repeat, and set up monitors that check something periodically and only report when it matters. Background agents and schedules report to Matthew's iPhone on their own, so after starting one just say what you set up in a sentence.
@@ -14,6 +15,9 @@ export const SYSTEM = `You are Nova, Matthew's AI assistant. You run on his Mac 
 - If you need a password, a one-time code or a decision only Matthew can make, stop and tell him what you need.
 - When Matthew wants to take over or use the Mac himself, he means from his iPhone: call open_on_iphone with view "control", don't use the computer, and reply in one short sentence.
 - Your face on the iPhone can turn into a visual with the show tool. Use it whenever a picture helps: when he asks to visualize, graph, chart, compare or list things, or to explain or teach something step by step (use a board, especially for math). Visuals don't need the computer. Put the explanation in the board steps' "say" fields, since they are read aloud as each step is written, and keep your final reply to one short sentence. Use the board's sketch for diagrams. For a follow-up like "now shift it up", call show again with the changed visual.`;
+
+/// The instructions for one task: Nova's base prompt plus the current range.
+export const systemFor = access => `${SYSTEM}\n- ${rangeNote(access)}`;
 
 const point = { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 };
 export const SHOW_TOOL = {
@@ -79,8 +83,8 @@ function withBreakpoint(messages) {
   return copy;
 }
 
-export async function callClaude(body, { signal, fetchImpl = fetch, key = configuredKey() } = {}) {
-  if (!key) fail('Add a Claude API key to the private .env.local file on your Mac (permissions 600).');
+export async function callClaude(body, { signal, fetchImpl = fetch, key = keys.read('anthropic') } = {}) {
+  if (!key) throw Object.assign(new Error('Connect your Claude API key in the Nova app first.'), { unbilled: true });
   let response;
   try {
     // Server-side web research can keep one request busy for minutes.
@@ -129,6 +133,7 @@ export async function runAgent({ task, history = [], execute, spend, onNarration
     if (data.stop_reason !== 'tool_use' || !calls.length) return { message: text || 'Done.', turns: turn + 1, actions, visual, visuals };
     if (text) onNarration(text);
     const results = [];
+    let paused = false;
     for (const block of calls) {
       if (custom.has(block.name) && !block.toolset_name) {
         let output, failed = false;
@@ -149,6 +154,8 @@ export async function runAgent({ task, history = [], execute, spend, onNarration
       try {
         if (block.toolset_name !== 'computer') fail(`Unknown tool ${block.name}`);
         if (signal.aborted) fail('Task cancelled');
+        // Actions planned before a takeover would land on a screen that has since changed.
+        if (paused) fail('Skipped because Matthew took over. Take a screenshot before acting again.');
         const input = Object.fromEntries(INPUTS.filter(k => block.input?.[k] !== undefined).map(k => [k, block.input[k]]));
         if (block.name === 'wait') {
           await new Promise(ok => setTimeout(ok, Math.max(0, Math.min(30, Number(input.duration) || 1)) * 1000));
@@ -156,13 +163,14 @@ export async function runAgent({ task, history = [], execute, spend, onNarration
         } else {
           if (!['screenshot','zoom','cursor_position'].includes(block.name)) { actions++; onAction(block.name, input); }
           const output = await execute({ action: block.name, ...input });
+          if (output.paused) paused = true;
           if (typeof output.image === 'string') {
             if (block.name === 'screenshot') onScreen(output.image);
             result.content = [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: output.image } }];
           } else result.content = [{ type: 'text', text: String(output.text ?? 'OK').slice(0, 2000) }];
         }
       } catch (error) {
-        if (signal.aborted || /Stopped on the Mac/.test(error.message)) throw error;
+        if (signal.aborted || error.fatal || /Stopped on the Mac/.test(error.message)) throw error;
         result.is_error = true;
         result.content = [{ type: 'text', text: String(error.message).slice(0, 500) }];
       }

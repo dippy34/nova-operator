@@ -1,7 +1,9 @@
 import {spawn} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
 import {runAgent} from './agent.mjs';
-import {meter} from './computer.mjs';
+import {meter,engineFor} from './computer.mjs';
+import {readAccess} from './policy.mjs';
+import {keys} from './keys.mjs';
 
 export const MAX_PARALLEL=4;
 const RETRY_MS=120_000;
@@ -111,7 +113,7 @@ export function sendIMessage(to,text,spawnImpl=spawn){
 
 /// Background agents, schedules, monitors and their reports. Research agents run in parallel;
 /// anything that needs the Mac's screen takes turns with Nova and waits while Matthew is in control.
-export function createWork(store,computer,{agent=runAgent,call,notify=macNotify,text=sendIMessage,spawnImpl=spawn,tickMs=15_000,wakeMs=800}={}){
+export function createWork(store,computer,{agent=runAgent,call,openai={},keyStore=keys,notify=macNotify,text=sendIMessage,spawnImpl=spawn,tickMs=15_000,wakeMs=800}={}){
   const running=new Map(),memory=new Map();
   let caffeinate=null,awakeMode=null,timer=null,closed=false;
   const alive=()=>!closed&&store.db.isOpen;
@@ -148,8 +150,9 @@ export function createWork(store,computer,{agent=runAgent,call,notify=macNotify,
     });
   };
   const research=async(id,task,signal,key)=>{
-    const metered=meter(store,id,stoppedCheck);
-    const result=await agent({task,history:key?memory.get(key)??[]:[],signal,call,computer:false,system:RESEARCH_SYSTEM,spend:metered.spend,
+    const engine=engineFor(store,{agent,call,openai,keyStore});
+    const metered=meter(store,id,stoppedCheck,engine.price);
+    const result=await engine.run({task,history:key?memory.get(key)??[]:[],signal,call:engine.call,computer:false,system:RESEARCH_SYSTEM,spend:metered.spend,
       onNarration:text=>store.event(id,'narration',text.slice(0,600)),onVisual:spec=>store.event(id,'visual',spec)});
     if(key)memory.set(key,[...(memory.get(key)??[]),{role:'user',content:task.slice(0,1500)},{role:'assistant',content:result.message.slice(0,2500)}].slice(-8));
     return {message:result.message,estimatedUSD:metered.spent/1e6,visuals:result.visuals};
@@ -218,6 +221,8 @@ export function createWork(store,computer,{agent=runAgent,call,notify=macNotify,
   const addSchedule=(device,input)=>{
     stoppedCheck();
     const s=scheduleSpec(input);
+    if(s.usesComputer&&!computer.status(device).owner)fail('Only the iPhone that controls this Mac can schedule work that uses the Mac.');
+    if(s.usesComputer&&readAccess(store).level==='chat')fail("Nova's range is Just chat, so a schedule can't use the Mac. Change the range in the Nova app, or schedule a web task instead.");
     const id=`sch_${randomBytes(6).toString('base64url')}`;
     store.db.prepare('INSERT INTO schedules(id,device_id,title,task,spec,uses_computer,monitor,next_ms,until_ms,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
       .run(id,device,s.title,s.task,JSON.stringify(s.spec),s.usesComputer?1:0,s.monitor?1:0,s.first,s.until,new Date().toISOString());
@@ -266,6 +271,7 @@ export function createWork(store,computer,{agent=runAgent,call,notify=macNotify,
       return {tools:WORK_TOOLS,onTool:async(name,input)=>{
         if(name==='open_on_iphone'){
           if(!['control','screen','work'].includes(input.view))fail('Unknown view');
+          if(input.view!=='work'&&readAccess(store).level==='chat')fail("Remote control and the live screen are off while Nova's range is Just chat. Matthew can change the range in the Nova app.");
           if(job)store.event(job,'open',input.view);
           return input.view==='control'?"The remote control is open on Matthew's iPhone; he is driving now.":`Opened the ${input.view} view on Matthew's iPhone.`;
         }

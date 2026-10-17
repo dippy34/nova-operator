@@ -6,11 +6,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeNova } from './server.mjs';
 import { Store } from './db.mjs';
+import { memoryKeyStore } from './keys.mjs';
 
 const wait = ms=>new Promise(ok=>setTimeout(ok,ms));
 async function fixture(executeOverride, options = {}) {
   const dir=mkdtempSync(join(tmpdir(),'nova-'));
-  const app=makeNova({dbFile:join(dir,'db.sqlite'),executeOverride,...options});
+  const app=makeNova({dbFile:join(dir,'db.sqlite'),executeOverride,setupOptions:{keyStore:memoryKeyStore()},...options});
   const port=await app.listen(0);
   const url=`http://127.0.0.1:${port}`;
   const post=(route, body={}, token)=>fetch(url+route,{method:'POST',headers:{'content-type':'application/json',...(token?{authorization:`Bearer ${token}`}:{})},body:JSON.stringify(body)});

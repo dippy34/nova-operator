@@ -14,6 +14,7 @@ One file per significant architectural choice. Statuses: `Proposed`, `Accepted`,
 | [0008](0008-reviewed-app-control.md) | Reviewed app-scoped computer sessions with a contained Brain | Superseded by 0009 |
 | [0009](0009-autonomous-computer-control.md) | Autonomous whole-Mac control with Claude computer use | Accepted |
 | [0010](0010-work-agents-and-takeover.md) | Background agents, schedules, unlimited spending and iPhone take-over | Proposed |
+| [0011](0011-setup-and-range.md) | Onboarding, access range and Keychain provider keys | Proposed |
 
 ## Template
 

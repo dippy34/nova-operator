@@ -1,13 +1,16 @@
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { configuredKey, MODEL, pricedUsage } from './claude-worker.mjs';
+import { MODEL, pricedUsage } from './claude-worker.mjs';
 import {workerLaunch} from './brain-sandbox.mjs';
+import { keys } from './keys.mjs';
+
+const configuredKey = () => keys.read('anthropic');
 
 // Matthew removed the allowance on 2026-10-16: Nova spends until the Claude credits run out.
 export const AI_BUDGET_MICROS = Number.POSITIVE_INFINITY;
 export const RESERVATION_MICROS = 10_000; // $0.01 retained on unknown outcomes.
 const errors = {
-  KEY: 'Add a Claude API key to the private .env.local file on your Mac (permissions 600).',
+  KEY: 'Chat on this device uses Claude. Connect a Claude API key in the Nova app on the owner iPhone.',
   AUTH: 'Claude rejected the API key. Check the key and access in Claude Console.',
   LIMIT: 'Claude quota or rate limit reached. Check credits; Nova did not retry.',
   PROVIDER: 'Claude could not complete this request. Nova did not retry.',
@@ -79,7 +82,7 @@ export function callWorker(messages, signal, {fetchImpl=fetch,keyProvider=config
   });
 }
 
-export function createAI(store, { request = callWorker, configured = () => Boolean(configuredKey()) } = {}) {
+export function createAI(store, { keyStore = keys, request = (messages, signal) => callWorker(messages, signal, { keyProvider: () => keyStore.read('anthropic') }), configured = () => Boolean(keyStore.read('anthropic')) } = {}) {
   let busy = false;
   return {
     status() { return { configured: configured(), model: MODEL, usedUSD: store.aiSpent()/1e6, allowanceUSD: null, busy }; },

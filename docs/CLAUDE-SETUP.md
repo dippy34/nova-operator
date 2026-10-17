@@ -4,13 +4,11 @@ Nova sends chat from the native iPhone app through Mac Core to Anthropic. [Revie
 
 ## Private API key
 
-Create `.env.local` in the repository root, containing one line:
+Prefer the Mac setup window or the iPhone **Connect an AI** step. Both save the Claude key in the login Keychain (service `dev.nova.provider`, account `anthropic`) without putting it in process arguments. `node core/cli.mjs key set anthropic` reads the key from stdin. `key import` copies a legacy `.env.local` key into the Keychain and leaves the file for you to delete.
 
-```dotenv
-ANTHROPIC_API_KEY=your-key-here
-```
+A private `.env.local` with `ANTHROPIC_API_KEY=` and permissions `600` still works as a fallback so existing setups keep running. This file is ignored by Git. Never put the key in chat, commit it, put it in a QR code, or add it to the LaunchAgent plist. Key values must never be printed while diagnosing configuration.
 
-Save it as plain text with permissions `600` (`chmod 600 .env.local`). This file is ignored by Git. Never put the key in chat, commit it, put it in the iPhone app, or add it to the LaunchAgent plist. Nova reads this file for each request, so changing the key does not require restarting Core. A missing key or broader file permissions disables chat. Create/manage keys in your own Claude Console account. Key values must never be printed while diagnosing configuration.
+OpenAI keys use the same Keychain service (account `openai`). A ChatGPT Plus or Pro subscription does not include API billing.
 
 Update Core with `npm run service:install`. Build/install the current native Xcode app; existing pairing survives an app update. The iPhone needs Tailscale connected and Core running, but needs no USB cable for conversations. Tap the send arrow under **Talk to Nova**. The most recent question/reply appears there; older exchanges remain in Recent jobs. Core health checks/polling do not call Claude.
 

@@ -25,7 +25,10 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: NovaApp/Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: Nova
+        INFOPLIST_KEY_NSCameraUsageDescription: "Nova uses the camera to scan the pairing code shown on your Mac."
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "Nova uses Face ID to confirm you want to give it control of your Mac."
         INFOPLIST_KEY_UIUserInterfaceStyle: Dark
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Nova listens when you tap the mic so you can talk to it."
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Nova turns what you say into text so it can act on your request."

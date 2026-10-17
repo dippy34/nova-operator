@@ -10,14 +10,23 @@
 		0E02A26FB8E3BF8CF0412EB4 /* NovaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4200B5D64B1418E787C2A49B /* NovaApp.swift */; };
 		4B19BFF8CFA874D414F0A80E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 977F5856E5EE03A8E3F8566A /* ContentView.swift */; };
 		4EFC409C443FF48FD7D6E5CE /* NovaModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70B12B0AF188E81A7E3DA9A /* NovaModel.swift */; };
+		8A1B2C3D4E5F678901234570 /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1B2C3D4E5F678901234567 /* Onboarding.swift */; };
+		8A1B2C3D4E5F678901234571 /* Home.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1B2C3D4E5F678901234568 /* Home.swift */; };
+		8A1B2C3D4E5F678901234572 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1B2C3D4E5F67890123456A /* Theme.swift */; };
+		FBE65C42EB504A5FA7743210 /* VoiceCaptureState.swift in Sources */ = {isa = PBXBuildFile; fileRef = F91FE274BA894CAE82576F7E /* VoiceCaptureState.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		1B0726CC913A2D745F9ADBB9 /* Nova.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Nova.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4200B5D64B1418E787C2A49B /* NovaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NovaApp.swift; sourceTree = "<group>"; };
+		8A1B2C3D4E5F678901234567 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
+		8A1B2C3D4E5F678901234568 /* Home.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Home.swift; sourceTree = "<group>"; };
+		8A1B2C3D4E5F678901234569 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		8A1B2C3D4E5F67890123456A /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		977F5856E5EE03A8E3F8566A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		C70B12B0AF188E81A7E3DA9A /* NovaModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NovaModel.swift; sourceTree = "<group>"; };
 		"TEMP_3EA4862F-DE0B-4FFF-AD71-8E6AB6398EBF" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		F91FE274BA894CAE82576F7E /* VoiceCaptureState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCaptureState.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -41,8 +50,13 @@
 			isa = PBXGroup;
 			children = (
 				977F5856E5EE03A8E3F8566A /* ContentView.swift */,
+				8A1B2C3D4E5F678901234568 /* Home.swift */,
+				8A1B2C3D4E5F678901234569 /* Info.plist */,
 				4200B5D64B1418E787C2A49B /* NovaApp.swift */,
 				C70B12B0AF188E81A7E3DA9A /* NovaModel.swift */,
+				8A1B2C3D4E5F678901234567 /* Onboarding.swift */,
+				8A1B2C3D4E5F67890123456A /* Theme.swift */,
+				F91FE274BA894CAE82576F7E /* VoiceCaptureState.swift */,
 			);
 			path = NovaApp;
 			sourceTree = "<group>";
@@ -114,8 +128,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				4B19BFF8CFA874D414F0A80E /* ContentView.swift in Sources */,
+				8A1B2C3D4E5F678901234571 /* Home.swift in Sources */,
 				0E02A26FB8E3BF8CF0412EB4 /* NovaApp.swift in Sources */,
 				4EFC409C443FF48FD7D6E5CE /* NovaModel.swift in Sources */,
+				8A1B2C3D4E5F678901234570 /* Onboarding.swift in Sources */,
+				8A1B2C3D4E5F678901234572 /* Theme.swift in Sources */,
+				FBE65C42EB504A5FA7743210 /* VoiceCaptureState.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -130,10 +148,13 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NovaApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Nova;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Nova uses the camera to scan the pairing code shown on your Mac.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Nova uses Face ID to confirm you want to give it control of your Mac.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Nova listens when you tap the mic so you can talk to it.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Nova turns what you say into text so it can act on your request.";
 				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
@@ -221,10 +242,13 @@
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NovaApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Nova;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Nova uses the camera to scan the pairing code shown on your Mac.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "Nova uses Face ID to confirm you want to give it control of your Mac.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Nova listens when you tap the mic so you can talk to it.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Nova turns what you say into text so it can act on your request.";
 				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;

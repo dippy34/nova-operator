@@ -2,74 +2,162 @@ import SwiftUI
 import UIKit
 import Charts
 
-enum FaceMood { case idle, listening, working, speaking, happy, confused }
+extension Text {
+    /// Titles stay on one line when they can, and never leave a single short word stranded.
+    func novaTitle() -> some View {
+        self.font(.title.bold())
+            .lineLimit(2)
+            .minimumScaleFactor(0.7)
+            .allowsTightening(true)
+            .multilineTextAlignment(.leading)
+    }
+    func novaHeadline() -> some View {
+        self.font(.headline)
+            .lineLimit(2)
+            .minimumScaleFactor(0.78)
+            .allowsTightening(true)
+    }
+}
 
+enum FaceMood: String, CaseIterable {
+    case idle, listening, working, speaking, happy, confused
+    var title: String {
+        switch self {
+        case .idle: "Idle"
+        case .listening: "Listening"
+        case .working: "Working"
+        case .speaking: "Speaking"
+        case .happy: "Done"
+        case .confused: "Stuck"
+        }
+    }
+    var detail: String {
+        switch self {
+        case .idle: "Waiting. Tap to talk."
+        case .listening: "Hearing you. Tap again to send."
+        case .working: "Using the Mac or thinking."
+        case .speaking: "Reading the answer aloud."
+        case .happy: "The task finished."
+        case .confused: "Something went wrong."
+        }
+    }
+}
+
+/// Debug gallery of every face Nova already had. Launch with `-nova-phases`.
+struct FacePhasesView: View {
+    private var only: FaceMood? {
+        guard let raw = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("-nova-phase=") })?
+            .split(separator: "=").last else { return nil }
+        return FaceMood(rawValue: String(raw))
+    }
+    var body: some View {
+        Group {
+            if let only {
+                VStack(spacing: 22) {
+                    Spacer()
+                    NovaFace(mood: only, size: 1.15)
+                    Text(only.title).font(.largeTitle.bold())
+                    Text(only.detail).font(.title3).foregroundStyle(.secondary)
+                    Spacer()
+                }
+            } else {
+                ScrollView {
+                    VStack(spacing: 20) {
+                        Text("Nova's faces").font(.largeTitle.bold()).padding(.top, 8)
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 18) {
+                            ForEach(FaceMood.allCases, id: \.self) { mood in
+                                VStack(spacing: 6) {
+                                    NovaFace(mood: mood, size: 0.48)
+                                    Text(mood.title).font(.headline)
+                                    Text(mood.detail).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                                }
+                            }
+                        }
+                    }
+                    .padding()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(red: 0.02, green: 0.03, blue: 0.06).ignoresSafeArea())
+    }
+}
+
+/// Nova stays a character: two expressive eyes and a little smile.
+/// Shared by home, setup, and the compact task header.
 struct NovaFace: View {
     var mood: FaceMood
     var size: CGFloat = 1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var opaque
     @State private var blink = false
-    private var color: Color {
+    private var animated: Bool { mood == .working || mood == .speaking }
+    private var ink: Color {
         switch mood {
-        case .idle: .cyan
-        case .listening: Color(red:0.85,green:0.5,blue:1)
-        case .working: .orange
-        case .speaking, .happy: .mint
-        case .confused: Color(red:1,green:0.45,blue:0.45)
+        case .idle: NovaInk.cyan
+        case .listening: Color(red: 0.65, green: 0.64, blue: 1)
+        case .working: Color(red: 0.57, green: 0.66, blue: 1)
+        case .speaking, .happy: Color(red: 0.35, green: 0.86, blue: 0.77)
+        case .confused: Color(red: 1, green: 0.65, blue: 0.48)
         }
     }
     var body: some View {
-        TimelineView(.animation) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            let glance = mood == .working ? sin(t*2.2)*22 : 0
-            VStack(spacing: 46) {
-                HStack(spacing: 70) {
+        TimelineView(.animation(minimumInterval: 1.0 / 24, paused: reduceMotion || !animated)) { context in
+            let t = reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate
+            let glance = mood == .working && !reduceMotion ? sin(t * 1.5) * 8 : 0
+            VStack(spacing: 32) {
+                HStack(spacing: 46) {
                     eye(left: true).offset(x: glance)
                     eye(left: false).offset(x: glance)
-                }
-                mouth(t: t).frame(height: 40)
+                }.frame(height: 106)
+                mouth(t: t).frame(width: 90, height: 34)
             }
-            .offset(y: sin(t*1.6)*6)
+            .rotationEffect(.degrees(mood == .confused ? -7 : mood == .listening ? 3 : 0))
+            .foregroundStyle(ink)
+            .shadow(color: opaque ? .clear : ink.opacity(0.25), radius: 18)
+            .frame(width: 260, height: 260)
             .scaleEffect(size)
-            .frame(width: 260*size, height: 260*size)
-            .shadow(color: color.opacity(0.8), radius: 24*size)
+            .frame(width: 260 * size, height: 260 * size)
         }
-        .animation(.spring(duration: 0.4), value: mood)
-        .task {
+        .animation(reduceMotion ? nil : .spring(duration: 0.42, bounce: 0.12), value: mood)
+        .task(id: reduceMotion) {
+            guard !reduceMotion else { blink = false; return }
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(Double.random(in: 2.5...5)))
-                withAnimation(.easeInOut(duration: 0.08)) { blink = true }
-                try? await Task.sleep(for: .milliseconds(110))
-                withAnimation(.easeInOut(duration: 0.1)) { blink = false }
+                do { try await Task.sleep(for: .seconds(Double.random(in: 3.0...5.5))) } catch { return }
+                withAnimation(.easeInOut(duration: 0.09)) { blink = true }
+                do { try await Task.sleep(for: .milliseconds(130)) } catch { return }
+                withAnimation(.easeInOut(duration: 0.12)) { blink = false }
             }
         }
         .accessibilityElement()
-        .accessibilityLabel(mood == .listening ? "Nova is listening. Tap to send." : mood == .working ? "Nova is working" : mood == .speaking ? "Nova is speaking" : "Nova. Tap to talk, press and hold for more.")
+        .accessibilityLabel("Nova. \(mood.title).")
     }
     @ViewBuilder private func eye(left: Bool) -> some View {
         if mood == .happy && !blink {
-            HappyEye().stroke(color, style: StrokeStyle(lineWidth: 18, lineCap: .round)).frame(width: 62, height: 40).frame(height: 108)
+            HappyEye().stroke(style: StrokeStyle(lineWidth: 13, lineCap: .round))
+                .frame(width: 52, height: 28).frame(width: 56, height: 106)
         } else {
-            let height: CGFloat = blink ? 8 : mood == .listening ? 128 : mood == .confused ? (left ? 70 : 108) : 108
-            Capsule().fill(color).frame(width: 58, height: height)
-                .rotationEffect(.degrees(mood == .confused ? (left ? -12 : 8) : 0))
-                .frame(height: 128)
+            let height: CGFloat = blink ? 7 : mood == .listening ? 98 : mood == .working ? (left ? 24 : 65) : mood == .confused ? (left ? 48 : 84) : 78
+            Capsule().frame(width: mood == .working && left ? 54 : 48, height: height)
+                .rotationEffect(.degrees(mood == .idle ? (left ? 3 : -3) : mood == .confused ? (left ? -12 : 7) : 0))
+                .frame(width: 56, height: 106)
         }
     }
     @ViewBuilder private func mouth(t: Double) -> some View {
         switch mood {
-        case .speaking, .listening:
-            HStack(spacing: 7) {
-                ForEach(0..<7, id: \.self) { i in
-                    Capsule().fill(color)
-                        .frame(width: 9, height: mood == .speaking ? 10+abs(sin(t*9+Double(i)*0.9))*30 : 10+abs(sin(t*3+Double(i)*0.6))*10)
-                }
-            }
+        case .idle:
+            HappyEye().stroke(style: StrokeStyle(lineWidth: 8, lineCap: .round)).frame(width: 48, height: 13).rotationEffect(.degrees(180))
+        case .listening:
+            Ellipse().frame(width: 19, height: 23)
+        case .working:
+            Capsule().frame(width: 30, height: 7).rotationEffect(.degrees(-8)).offset(x: 7)
+        case .speaking:
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .frame(width: 28 + abs(sin(t * 5)) * 8, height: 13 + abs(sin(t * 7)) * 18)
         case .happy:
-            HappyEye().stroke(color, style: StrokeStyle(lineWidth: 10, lineCap: .round)).frame(width: 90, height: 26).rotationEffect(.degrees(180))
+            HappyEye().stroke(style: StrokeStyle(lineWidth: 9, lineCap: .round)).frame(width: 70, height: 23).rotationEffect(.degrees(180))
         case .confused:
-            Capsule().fill(color).frame(width: 60, height: 10).rotationEffect(.degrees(-8))
-        default:
-            Capsule().fill(color.opacity(mood == .working ? 0.7 : 1)).frame(width: mood == .working ? 36 : 90, height: 10)
+            Capsule().frame(width: 32, height: 7).rotationEffect(.degrees(13)).offset(x: -7)
         }
     }
 }
@@ -87,20 +175,38 @@ struct HappyEye: Shape {
 /// An animated glow around the screen's rounded edges, shown while Nova listens.
 struct EdgeGlow: View {
     var level: CGFloat
-    private let shape = RoundedRectangle(cornerRadius: 47, style: .continuous)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var opaque
     var body: some View {
-        TimelineView(.animation) { context in
-            let angle = Angle.degrees(context.date.timeIntervalSinceReferenceDate * 80)
-            let gradient = AngularGradient(colors: [.cyan, .blue, .purple, .pink, .orange, .yellow, .cyan], center: .center, angle: angle)
-            ZStack {
-                shape.stroke(gradient, lineWidth: 5 + level*6)
-                shape.stroke(gradient, lineWidth: 14 + level*22).blur(radius: 12)
-                shape.stroke(gradient, lineWidth: 34 + level*44).blur(radius: 36).opacity(0.75)
+        let gradient = AngularGradient(colors: NovaInk.spectrum, center: .center, angle: .degrees(35))
+        let shape = RoundedRectangle(cornerRadius: 48, style: .continuous)
+        ZStack {
+            if !opaque {
+                // Fixed geometry and gradient: the compositor only changes opacity.
+                shape.strokeBorder(gradient, lineWidth: 14).blur(radius: 10).opacity(0.65)
             }
+            shape.strokeBorder(gradient, lineWidth: 3)
         }
+        .drawingGroup()
+        .opacity(reduceMotion ? 0.85 : 0.72 + min(1, max(0, level)) * 0.28)
         .ignoresSafeArea()
         .allowsHitTesting(false)
-        .animation(.easeOut(duration: 0.12), value: level)
+        .accessibilityHidden(true)
+    }
+}
+
+/// A leaf-only meter update; microphone buffers never invalidate ContentView.
+struct ListeningGlow: View {
+    let meter: VoiceMeter
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        if reduceMotion {
+            EdgeGlow(level: 0)
+        } else {
+            TimelineView(.periodic(from: .now, by: 1.0 / 15)) { _ in
+                EdgeGlow(level: meter.level)
+            }
+        }
     }
 }
 
@@ -114,6 +220,8 @@ struct ContentView: View {
     @State private var showScreen = false
     @State private var showWork = false
     @Namespace private var space
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     init(nova: NovaModel) { listenerState = nova.listener; speakerState = nova.speaker }
 
     private var computerTask: Bool { nova.working && nova.chat?.type == "computer.task" }
@@ -138,24 +246,26 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color(red:0.02,green:0.03,blue:0.06).ignoresSafeArea()
-            if nova.paired {
+            NovaBackground()
+            if nova.needsSetup {
+                OnboardingView()
+            } else if nova.paired {
                 if stage == .face {
-                    ZStack {
-                        WorkOrbit(count: nova.work?.running.count ?? 0)
-                        NovaFace(mood: mood)
-                            .matchedGeometryEffect(id: "face", in: space)
-                    }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
-                        .onTapGesture { Task { await nova.tapFace() } }
+                    NovaLanding(mood: mood, connection: "\(nova.connection) · \(nova.effectiveAccessLabel)", stopped: nova.stopped,
+                                canControl: nova.computer?.owner == true,
+                                voiceBusy: nova.voiceTransitioning || nova.busy || nova.working,
+                                voicePrompt: nova.voiceTransitioning ? (listenerState.capture.phase == .starting ? "Getting ready…" : "Sending your message…") : nil,
+                                running: nova.work?.running.count ?? 0, scheduled: nova.work?.schedules.count ?? 0,
+                                onTalk: { Task { await nova.tapFace() } }, onMenu: { showPanel = true },
+                                onScreen: { showScreen = true }, onWork: { showWork = true })
                         .onLongPressGesture { showPanel = true }
-                        .gesture(DragGesture(minimumDistance: 40).onEnded { drag in
+                        .simultaneousGesture(DragGesture(minimumDistance: 60).onEnded { drag in
                             guard nova.computer?.owner == true else { return }
-                            if drag.translation.height < -60 { showScreen = true }
-                            else if drag.translation.width < -60 { showWork = true }
+                            if drag.translation.height < -80 { showScreen = true }
+                            else if drag.translation.width < -80 { showWork = true }
                         })
-                    faceExtras
+                        .overlay(alignment: .top) { reportBanner.padding(.top, 66).padding(.horizontal, 24) }
+
                 } else if stage == .control {
                     ControlStage(mood: mood)
                 } else {
@@ -170,27 +280,41 @@ struct ContentView: View {
                             default: ResultStage()
                             }
                         }
-                        .transition(.asymmetric(insertion: .scale(scale: 0.6, anchor: .top).combined(with: .opacity), removal: .opacity))
+                        .transition(reduceMotion ? .opacity : .asymmetric(insertion: .scale(scale: 0.96).combined(with: .opacity), removal: .opacity))
                         if ![.visual, .control].contains(stage) { controls }
                     }
                     .padding(.horizontal)
                 }
                 if listenerState.listening {
-                    EdgeGlow(level: listenerState.level).transition(.opacity)
+                    ListeningGlow(meter: listenerState.meter).transition(.opacity)
                 }
             } else {
-                ScrollView { pairing.padding() }
+                OnboardingView()
             }
         }
-        .animation(.spring(duration: 0.55, bounce: 0.2), value: stage)
-        .animation(.easeInOut(duration: 0.3), value: listenerState.listening)
-        .onChange(of: nova.controlling) { _, on in AppDelegate.landscape(on) }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.35), value: stage)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: listenerState.listening)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background || (phase == .inactive && listenerState.listening) { nova.listener.cancel() }
+        }
+        .onChange(of: nova.working) { _, working in if working { nova.listener.cancel() } }
+        .onChange(of: nova.stopped) { _, stopped in if stopped { nova.listener.cancel() } }
+        .onChange(of: showPanel) { _, shown in if shown { nova.listener.cancel() } }
+        .onChange(of: showWork) { _, shown in if shown { nova.listener.cancel() } }
+        .onChange(of: showScreen) { _, shown in if shown { nova.listener.cancel() } }
+        .onChange(of: listenerState.errorMessage) { _, error in
+            if let error { nova.errorMessage = error; nova.listener.errorMessage = nil }
+        }
+        .onChange(of: nova.controlling) { _, on in
+            if on { nova.listener.cancel() }
+            AppDelegate.landscape(on)
+        }
         .onChange(of: nova.requestedView) { _, view in
             if view == "screen" { showScreen = true } else if view == "work" { showWork = true }
             nova.requestedView = nil
         }
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showPanel) { NovaPanel() }
+        .sheet(isPresented: $showPanel) { HomeView() }
         .sheet(isPresented: $showWork) {
             NavigationStack {
                 WorkView(onShow: { showWork = false })
@@ -218,9 +342,9 @@ struct ContentView: View {
                 .onTapGesture { Task { await nova.tapFace() } }
                 .onLongPressGesture { showPanel = true }
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.headline)
+                Text(title).novaHeadline()
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    Text(subtitle(now: context.date)).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    Text(subtitle(now: context.date)).font(.caption).foregroundStyle(.secondary).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
                 }
             }
             Spacer()
@@ -229,18 +353,18 @@ struct ContentView: View {
                 else if stage == .control { Task { await nova.handBack() } }
                 else { showScreen = false; nova.dismissResult() }
             } label: {
-                Image(systemName: "xmark").font(.headline).padding(10).background(.white.opacity(0.08), in: Circle())
-            }.accessibilityLabel("Back to Nova's face")
+                Image(systemName: "xmark").font(.headline).padding(10).novaGlass(radius: 22)
+            }.accessibilityLabel("Back to Nova")
         }
         .padding(.top, 8)
     }
     private var title: String {
         switch stage {
-        case .screen: computerTask ? "Nova is in control" : "Your Mac"
-        case .progress: "Working on it"
-        case .control: "You're driving"
+        case .screen: computerTask ? "Working on your Mac" : "Your Mac, live"
+        case .progress: "In progress"
+        case .control: "You’re in control"
         case .visual: nova.visuals.indices.contains(nova.page) ? nova.visuals[nova.page].title ?? "Nova" : "Nova"
-        default: nova.result?.ok == false ? "Something went wrong" : "Done"
+        default: nova.result?.ok == false ? "Needs your attention" : "Finished"
         }
     }
     private func subtitle(now: Date) -> String {
@@ -257,30 +381,21 @@ struct ContentView: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 12) {
+        VStack(spacing: 8) {
             if nova.computer?.owner == true {
-                Button { showScreen.toggle() } label: {
-                    Label(showScreen ? (computerTask ? "Progress" : "Close screen") : "Show screen", systemImage: showScreen ? "list.bullet" : "display")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered).tint(.cyan)
+                ExplainButton(title: showScreen ? "Hide the Mac" : "Show the Mac", does: showScreen ? "Goes back to the step list." : "Live picture of what I can see.", symbol: "display", action: { showScreen.toggle() })
             }
             if stage == .screen {
-                Button { showScreen = false; nova.takeOver() } label: {
-                    Label("Take over", systemImage: "hand.point.up.left.fill").frame(maxWidth: .infinity)
-                }.buttonStyle(.borderedProminent).tint(.cyan)
+                ExplainButton(title: "Take control", does: "Pauses me. You click and type from this phone.", symbol: "hand.point.up.left.fill", prominent: true, action: { showScreen = false; nova.takeOver() })
             }
             if computerTask {
-                Button(role: .destructive) { Task { await nova.stopTask() } } label: {
-                    Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity)
-                }.buttonStyle(.borderedProminent).tint(.red)
+                ExplainButton(title: "Stop this task", does: "Ends what I am doing on the Mac right now.", symbol: "stop.fill", danger: true, action: { Task { await nova.stopTask() } })
             }
         }
-        .controlSize(.large)
         .padding(.bottom, 8)
     }
     /// A banner for the newest report, and a pill summarizing background work. Both open the Work view.
-    @ViewBuilder private var faceExtras: some View {
+    @ViewBuilder private var reportBanner: some View {
         VStack {
             if let report = nova.banner {
                 Button { showWork = true } label: {
@@ -299,17 +414,7 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
-            Spacer()
-            if let work = nova.work, !(work.running.isEmpty && work.schedules.isEmpty) {
-                Button { showWork = true } label: {
-                    Label(workSummary(work), systemImage: work.running.isEmpty ? "calendar.badge.clock" : "sparkles")
-                        .font(.footnote.weight(.medium))
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .background(.white.opacity(0.08), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            }
+
         }
         .padding()
         .animation(.spring(duration: 0.5), value: nova.banner)
@@ -320,60 +425,68 @@ struct ContentView: View {
         if !work.schedules.isEmpty { parts.append("\(work.schedules.count) scheduled") }
         return parts.joined(separator: " · ")
     }
-    private var pairing: some View {
-        VStack(alignment:.leading,spacing:12) {
-            Text("Connect to your Mac").font(.title2.bold())
-            Text("Run Nova Core and Tailscale Serve on the Mac, then enter its HTTPS address and one-time pairing code.")
-                .foregroundStyle(.secondary).font(.subheadline)
-            TextField("https://mac.example.ts.net",text:$nova.address)
-                .textContentType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
-                .keyboardType(.URL).textFieldStyle(.roundedBorder)
-            TextField("One-time pairing code",text:$nova.pairingCode)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
-            Button {Task {await nova.pair()}} label: {
-                Label(nova.busy ? "Pairing..." : "Pair Nova",systemImage:"link").frame(maxWidth:.infinity)
-            }.buttonStyle(.borderedProminent).disabled(nova.busy || nova.pairingCode.isEmpty)
-        }.padding().background(.white.opacity(0.06),in:RoundedRectangle(cornerRadius:16))
-    }
-
 }
 
-/// Nova's narration as a big caption, above a timeline of its actions.
+/// Live Mac preview plus the current step — text scales instead of wrapping one word onto a lonely line.
 struct ProgressStage: View {
     @EnvironmentObject private var nova: NovaModel
     var body: some View {
         let events = nova.chat?.events.filter { ["narration","action"].contains($0.kind) } ?? []
-        VStack(alignment: .leading, spacing: 16) {
-            if let question = nova.chat?.payload["message"] {
-                Text("“\(question.description)”").font(.subheadline).foregroundStyle(.cyan).lineLimit(2)
+        let line = events.last(where: { $0.kind == "narration" })?.description ?? "Getting started…"
+        VStack(spacing: 14) {
+            if let data = nova.computerScreen, let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(NovaInk.line, lineWidth: 1))
+                    .frame(maxHeight: 240)
+                    .frame(maxWidth: .infinity)
+                    .overlay(alignment: .topLeading) {
+                        Text("LIVE")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(.regularMaterial, in: Capsule())
+                            .padding(10)
+                    }
             }
-            Text(events.last(where: { $0.kind == "narration" })?.description ?? "Getting started…")
-                .font(.title2.weight(.semibold))
-                .contentTransition(.opacity)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .animation(.easeInOut, value: events.count)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Current step")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                if let question = nova.chat?.payload["message"] {
+                    Text("You asked: \(question.description)")
+                        .font(.subheadline)
+                        .foregroundStyle(.cyan)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.8)
+                        .allowsTightening(true)
+                }
+                Text(line)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.72)
+                    .allowsTightening(true)
+                    .contentTransition(.opacity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Every click and key is listed below. Nothing is hidden.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .novaSurface()
             ScrollViewReader { scroller in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(events.enumerated()), id: \.element.id) { index, event in
-                            StepRow(event: event, current: index == events.count - 1)
+                        ForEach(Array(events.suffix(8).enumerated()), id: \.element.id) { index, event in
+                            StepRow(event: event, current: index == min(events.count, 8) - 1)
                                 .id(event.id)
-                                .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                     }
                 }
                 .onChange(of: events.count) { withAnimation { scroller.scrollTo(events.last?.id, anchor: .bottom) } }
             }
-            if let data = nova.computerScreen, let image = UIImage(data: data) {
-                Image(uiImage: image).resizable().scaledToFit()
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.12)))
-                    .frame(maxHeight: 150)
-                    .frame(maxWidth: .infinity)
-            }
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .animation(.easeInOut, value: events.count)
     }
 }
 
@@ -385,27 +498,22 @@ struct StepRow: View {
         HStack(alignment: .top, spacing: 12) {
             VStack(spacing: 0) {
                 ZStack {
-                    Circle().fill(current ? Color.orange : Color.mint.opacity(0.8)).frame(width: 12, height: 12)
-                    if current { Circle().stroke(Color.orange, lineWidth: 2).frame(width: 22, height: 22).scaleEffect(pulse ? 1.3 : 0.8).opacity(pulse ? 0 : 1) }
+                    Circle().fill(current ? Color.accentColor : Color.secondary.opacity(0.5)).frame(width: 12, height: 12)
+                    if current { Circle().stroke(Color.accentColor, lineWidth: 2).frame(width: 22, height: 22).scaleEffect(pulse ? 1.3 : 0.8).opacity(pulse ? 0 : 1) }
                 }.frame(width: 22, height: 22)
                 Rectangle().fill(.white.opacity(0.12)).frame(width: 2).frame(maxHeight: .infinity)
             }
-            Label(event.description, systemImage: event.kind == "narration" ? "text.bubble" : icon)
+            Text(event.description)
                 .font(event.kind == "narration" ? .subheadline : .caption)
                 .foregroundStyle(event.kind == "narration" ? .primary : .secondary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+                .allowsTightening(true)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 3)
                 .padding(.bottom, 10)
-            Spacer(minLength: 0)
         }
         .onAppear { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { pulse = true } }
-    }
-    private var icon: String {
-        let text = event.description.lowercased()
-        if text.hasPrefix("typed") { return "keyboard" }
-        if text.hasPrefix("pressed") { return "command" }
-        if text.hasPrefix("scrolled") { return "scroll" }
-        if text.hasPrefix("dragged") { return "hand.draw" }
-        return "cursorarrow.click"
     }
 }
 
@@ -430,8 +538,8 @@ struct ScreenStage: View {
                         }
                     }
                     .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(inControl ? Color.orange : Color.white.opacity(0.15), lineWidth: inControl ? 2 : 1))
-                    .shadow(color: (inControl ? Color.orange : Color.cyan).opacity(0.35), radius: 18)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(inControl ? Color.accentColor : NovaInk.line, lineWidth: 1))
+                    .shadow(color: .black.opacity(0.12), radius: 16, y: 8)
                     .scaleEffect(zoom)
                     .gesture(MagnifyGesture().onChanged { zoom = min(3, max(1, $0.magnification)) }.onEnded { _ in withAnimation(.spring) { zoom = 1 } })
                     .onAppear { withAnimation(.easeOut(duration: 1).repeatForever(autoreverses: false)) { pulse = true } }
@@ -439,9 +547,9 @@ struct ScreenStage: View {
                 ProgressView("Connecting to your Mac…").frame(maxWidth: .infinity, minHeight: 220)
             }
             if inControl, let line = nova.chat?.events.last(where: { $0.kind == "narration" })?.description {
-                Text(line).font(.subheadline).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).contentTransition(.opacity)
+                Text(line).font(.subheadline).foregroundStyle(.secondary).lineLimit(2).minimumScaleFactor(0.8).allowsTightening(true).frame(maxWidth: .infinity, alignment: .leading).contentTransition(.opacity)
             } else if !inControl {
-                Text("Tap Nova's face and ask it to do anything here.").font(.subheadline).foregroundStyle(.secondary)
+                Text("Tap Nova to ask about what’s on your screen.").font(.subheadline).foregroundStyle(.secondary)
             }
         }
         .frame(maxHeight: .infinity)
@@ -462,7 +570,7 @@ struct ResultStage: View {
                 .textSelection(.enabled)
                 .padding(18)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
+                .novaSurface()
             if let data = nova.computerScreen, nova.chat?.type == "computer.task", let image = UIImage(data: data) {
                 Image(uiImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 12)).frame(maxHeight: 200)
             }
@@ -874,7 +982,7 @@ struct CardsView: View {
                         Spacer(minLength: 0)
                     }
                     .padding(14)
-                    .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 18))
+                    .novaSurface()
                     .opacity(shown ? 1 : 0)
                     .offset(y: shown ? 0 : 30)
                     .animation(.spring(duration: 0.5).delay(Double(index) * 0.12), value: shown)
@@ -952,12 +1060,12 @@ struct ControlStage: View {
         HStack(spacing: 10) {
             NovaFace(mood: mood, size: 0.2).frame(width: 52, height: 52)
             VStack(alignment: .leading, spacing: 2) {
-                Text("You're driving").font(.headline)
+                Text("You’re in control").font(.headline)
                 Text("Tap to click · hold to right-click").font(.caption2).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             Button { Task { await nova.handBack() } } label: {
-                Text("Hand back").font(.subheadline.bold())
+                Text("Return to Nova").font(.subheadline.bold())
             }.buttonStyle(.borderedProminent).tint(.mint)
         }
     }
@@ -970,7 +1078,7 @@ struct ControlStage: View {
                              onLongPress: { p in last = p; send(["action": "right_click", "coordinate": [p.x, p.y]]) })
                     .aspectRatio(image.size.width / image.size.height, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.cyan.opacity(0.6), lineWidth: 1.5))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(NovaInk.line, lineWidth: 1))
                 ScrollPad { direction in
                     let p = last ?? CGPoint(x: image.size.width / 2, y: image.size.height / 2)
                     send(["action": "scroll", "coordinate": [p.x, p.y], "scroll_direction": direction, "scroll_amount": 2], haptic: false)
@@ -986,7 +1094,7 @@ struct ControlStage: View {
         ForEach(keys, id: \.0) { key, label in
             Button { send(["action": "key", "text": key]) } label: {
                 Text(label).font(.callout.weight(.medium)).frame(minWidth: 44).padding(.horizontal, 8).padding(.vertical, 8)
-                    .background(.white.opacity(0.08), in: Capsule())
+                    .novaGlass(radius: 22)
             }
             .buttonStyle(.plain)
         }
@@ -1112,8 +1220,9 @@ final class RemoteScrollView: UIScrollView, UIScrollViewDelegate {
 /// Little lights circling Nova's face, one per background agent at work.
 struct WorkOrbit: View {
     let count: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        TimelineView(.animation(paused: count == 0)) { context in
+        TimelineView(.animation(paused: count == 0 || reduceMotion)) { context in
             let t = context.date.timeIntervalSinceReferenceDate, n = min(count, 4)
             ZStack {
                 ForEach(0..<n, id: \.self) { i in
@@ -1144,7 +1253,7 @@ struct WorkView: View {
         List {
             if let work = nova.work {
                 Section("Working now") {
-                    if work.running.isEmpty { Text("Nothing running. Ask Nova to research something in the background.").foregroundStyle(.secondary) }
+                    if work.running.isEmpty { Text("You’re all caught up. Ask Nova to start a task whenever you’re ready.").foregroundStyle(.secondary) }
                     ForEach(work.running) { run in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -1161,7 +1270,7 @@ struct WorkView: View {
                     }
                 }
                 Section("Scheduled") {
-                    if work.schedules.isEmpty { Text("Nothing scheduled. Try “every weekday at 8, brief me on the news” or “watch this page and tell me when it changes”.").foregroundStyle(.secondary) }
+                    if work.schedules.isEmpty { Text("Make room for a routine. Ask Nova for a daily briefing or to watch for a change.").foregroundStyle(.secondary) }
                     ForEach(work.schedules) { schedule in
                         HStack(alignment: .top, spacing: 12) {
                             Image(systemName: schedule.monitor ? "eye" : "calendar.badge.clock").foregroundStyle(.cyan).frame(width: 24)
@@ -1185,7 +1294,9 @@ struct WorkView: View {
                 ProgressView()
             }
         }
-        .navigationTitle("Nova's work")
+        .navigationTitle("Activity")
+        .scrollContentBackground(.hidden)
+        .background(NovaBackground())
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await nova.refresh() }
     }
@@ -1208,7 +1319,7 @@ struct ReportRow: View {
             Text(report.message).font(.subheadline).lineLimit(expanded ? nil : 3).textSelection(.enabled)
             if !report.visuals.isEmpty {
                 Button { nova.showReport(report); onShow?() } label: { Label("Show on Nova's face", systemImage: "chart.xyaxis.line") }
-                    .font(.caption.bold()).buttonStyle(.bordered).tint(.cyan)
+                    .font(.caption.bold()).buttonStyle(.bordered).tint(.blue)
             }
         }
         .contentShape(Rectangle())

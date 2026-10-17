@@ -4,8 +4,11 @@ import {randomBytes,createHmac} from 'node:crypto';
 import {homedir} from 'node:os';
 import {resolve,dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {runAgent,agentCost} from './agent.mjs';
+import {runAgent,agentCost,systemFor} from './agent.mjs';
 import {AI_BUDGET_MICROS} from './ai.mjs';
+import {runOpenAIAgent,openaiCost} from './openai.mjs';
+import {keys,selectedProvider} from './keys.mjs';
+import {readAccess,checkAction,FILE_TOOLS,OPEN_APP_TOOL,fileTool,findApp} from './policy.mjs';
 
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 export const binary=join(root,'.nova-data','Nova Operator.app','Contents','MacOS','NovaOperator');
@@ -45,6 +48,11 @@ export async function permissions() {
   try{return {installed,running:true,...await operatorRequest({command:'permissions'},{timeout:5000})};}
   catch{return {installed,running:false,accessibility:false,screenRecording:false};}
 }
+/// Shows macOS's own Accessibility and Screen Recording prompts on the Mac. Granting stays a
+/// person's choice in System Settings; this only opens the prompts.
+export async function requestPermissions() {
+  return await operatorRequest({command:'request_permissions'},{timeout:10000});
+}
 const describe=(name,input)=>{
   const at=input.coordinate?` at ${input.coordinate.join(', ')}`:'';
   if(name==='type')return `Typed ${JSON.stringify(String(input.text).slice(0,80))}`;
@@ -54,8 +62,9 @@ const describe=(name,input)=>{
   return `${name.replaceAll('_',' ')}${at}`;
 };
 
-/// Meters one job's Claude turns: reserves an upper bound before each call and settles to actual usage.
-export function meter(store,id,check=()=>{}){
+/// Meters one job's AI turns: reserves an upper bound before each call and settles to actual usage.
+/// `price(data)` turns a provider response into micro-dollars.
+export function meter(store,id,check=()=>{},price=data=>agentCost(data.usage)){
   let spent=0;
   return {
     get spent(){return spent;},
@@ -66,50 +75,109 @@ export function meter(store,id,check=()=>{}){
       let data;
       // Unbilled provider errors release the hold; timeouts keep it because billing is unknown.
       try{data=await request();}catch(error){if(error.unbilled)store.settleAI(reservation,0);throw error;}
-      const cost=agentCost(data.usage);
+      const cost=price(data);
       store.settleAI(reservation,cost);spent+=cost;
       return data;
     }
   };
 }
 
-const INPUT_ACTIONS=new Set(['left_click','double_click','right_click','left_click_drag','mouse_move','scroll','type','key']);
-const CONTROL_MS=120_000;
-const pair=value=>Array.isArray(value)&&value.length===2&&value.every(n=>Number.isFinite(n)&&n>=0&&n<100000)?value.map(Math.round):null;
+/// The agent loop, model call and pricing for the AI provider Matthew chose.
+/// `openai` lets tests replace the OpenAI loop or call the same way `agent` and `call` do for Claude.
+export function engineFor(store,{agent=runAgent,call,openai={},keyStore=keys}={}){
+  const provider=selectedProvider(store,keyStore);
+  return provider==='openai'
+    ?{provider,run:openai.agent??runOpenAIAgent,call:openai.call,price:openaiCost}
+    :{provider,run:agent,call,price:data=>agentCost(data.usage)};
+}
 
-export function createComputer(store,{run=native,permissionCheck=permissions,agent=runAgent,call}={}) {
+const INPUT_ACTIONS=new Set(['left_click','double_click','right_click','left_click_drag','mouse_move','scroll','type','key']);
+const CONTROL_MS=5*60_000;
+const RESUMED='Matthew took over the Mac and has now handed it back. The screen may have changed, so take a screenshot before doing anything else.';
+const CHAT_ONLY="Remote control is off while Nova's range is Just chat. Change the range in the Nova app to see or use the Mac.";
+const pair=value=>Array.isArray(value)&&value.length===2&&value.every(n=>Number.isFinite(n)&&n>=0&&n<100000)?value.map(Math.round):null;
+const sleep=ms=>new Promise(ok=>setTimeout(ok,ms));
+
+export function createComputer(store,{run=native,permissionCheck=permissions,agent=runAgent,call,openai={},keyStore=keys,controlMs=CONTROL_MS}={}) {
   let current=null,liveBusy=false,controlledUntil=0;
   const screens=new Map(), memory=new Map(), conversations=new Map();
   const owner=()=>store.db.prepare("SELECT value FROM settings WHERE key='computer_owner'").get()?.value;
+  const controlled=()=>Date.now()<controlledUntil;
   const authorize=device=>{
     if(owner()!==device || !store.devices().some(d=>d.id===device))fail('Computer control is available only to the locally designated owner iPhone');
     if(store.stopped())fail('Nova is emergency stopped');
   };
+  // While Matthew drives from the iPhone, Nova's next action waits. When he hands back, Nova is
+  // told the screen may have changed instead of replaying an action planned for the old screen.
+  // A takeover that lapses without Hand back cancels the task, so Nova never resumes on its own.
+  const waitForControl=async(id,signal)=>{
+    if(!controlled())return false;
+    while(controlled()){if(signal.aborted)fail('Task cancelled');await sleep(200);}
+    if(controlledUntil!==0)throw Object.assign(new Error("You took over the Mac and didn't hand it back, so I stopped this task."),{fatal:true});
+    return true;
+  };
+  const takeControl=device=>{
+    authorize(device);
+    if(readAccess(store).level==='chat')fail(CHAT_ONLY);
+    if(!controlled()&&current)store.event(current.id,'paused','Matthew took over. Nova is waiting until he hands back control.');
+    controlledUntil=Date.now()+controlMs;
+  };
+  // Every AI action is checked against the current range when it runs, so a range change applies
+  // to the very next action, including in scheduled runs. The scope is signed into the request.
+  const act=async(device,id,signal,request)=>{
+    authorize(device);
+    if(signal.aborted)fail('Task cancelled');
+    if(await waitForControl(id,signal)&&request.action!=='screenshot')return {text:RESUMED,paused:true};
+    authorize(device);
+    const scope=checkAction(readAccess(store),request);
+    return await run({...request,scope},signal);
+  };
   return {
-    status(device){return {owner:owner()===device,busy:Boolean(current),task:current?.device===device?current.id:null,controlled:this.controlled()};},
+    status(device){return {owner:owner()===device,busy:Boolean(current),task:current?.device===device?current.id:null,controlled:controlled(),paused:Boolean(current)&&controlled()};},
     permissions:permissionCheck,
     busy(){return current?{...current}:null;},
-    controlled(){return Date.now()<controlledUntil;},
+    controlled,
     // Memory lasts for one conversation: the iPhone starts a new one each time the app opens.
     // Background runs (schedules) keep their own memory and never evict the iPhone's conversation.
-    async task(device,id,message,signal,conversation='default',{tools,onTool,prefix='',background=false}={}){
+    async task(device,id,message,signal,conversation='default',{tools=[],onTool,prefix='',background=false}={}){
       authorize(device);
       if(current)fail('Nova is already working on something. Stop it or wait for it to finish.');
-      if(background&&this.controlled())fail('Matthew is controlling the Mac');
+      if(background&&controlled())fail('Matthew is controlling the Mac');
       current={id,device,background};
       if(!background)controlledUntil=0;
       try{
-        const permission=await permissionCheck();
-        if(!permission.installed&&permission.installed!==undefined)fail('Build the signed Nova Operator Mac app first.');
-        if(permission.running===false)fail(NOT_RUNNING);
-        const missing=[!permission.accessibility&&'Accessibility',!permission.screenRecording&&'Screen Recording'].filter(Boolean);
-        if(missing.length)fail(`Nova Operator still needs ${missing.join(' and ')} access on the Mac. Open System Settings → Privacy & Security → ${missing[0]} and allow Nova Operator.`);
-        await run({action:'begin'},signal);
+        const access=readAccess(store),useComputer=access.level!=='chat';
+        if(background&&!useComputer)fail("Nova's range is Just chat, so it can't use the Mac for this scheduled task. Change the range in the Nova app.");
+        if(useComputer){
+          const permission=await permissionCheck();
+          if(!permission.installed&&permission.installed!==undefined)fail('Build the signed Nova Operator Mac app first.');
+          if(permission.running===false)fail(NOT_RUNNING);
+          const missing=[!permission.accessibility&&'Accessibility',!permission.screenRecording&&'Screen Recording'].filter(Boolean);
+          if(missing.length)fail(`Nova Operator still needs ${missing.join(' and ')} access on the Mac. Open System Settings → Privacy & Security → ${missing[0]} and allow Nova Operator.`);
+          await run({action:'begin'},signal);
+        }
+        const extra=[...tools,...(access.level==='apps'?[OPEN_APP_TOOL]:[]),...(useComputer&&access.folders.length?FILE_TOOLS:[])];
+        const handle=async(name,input)=>{
+          if(name==='open_app'){
+            const now=readAccess(store);
+            if(now.level!=='apps')fail('open_app is only for the Chosen apps range');
+            const app=findApp(now,input.app);
+            const result=await act(device,id,signal,{action:'open_app',bundle_id:app.bundleId});
+            if(result.paused)return result.text;
+            store.event(id,'action',`Opened ${app.name}`);
+            return `Opened ${app.name}.`;
+          }
+          if(FILE_TOOLS.some(t=>t.name===name)){authorize(device);return fileTool(readAccess(store),name,input);}
+          if(!onTool)fail(`Unknown tool ${name}`);
+          return await onTool(name,input);
+        };
         const key=`${device}:${conversation}`;
         if(!background&&conversations.get(device)!==key){memory.delete(conversations.get(device));conversations.set(device,key);}
-        const metered=meter(store,id,()=>authorize(device));
-        const result=await agent({task:prefix+message,history:memory.get(key)??[],signal,call,tools,onTool,
-          execute:async request=>{authorize(device);if(signal.aborted)fail('Task cancelled');return await run(request,signal);},
+        const engine=engineFor(store,{agent,call,openai,keyStore});
+        const metered=meter(store,id,()=>authorize(device),engine.price);
+        const result=await engine.run({task:prefix+message,history:memory.get(key)??[],signal,call:engine.call,tools:extra,onTool:handle,
+          computer:useComputer,system:systemFor(access),
+          execute:request=>act(device,id,signal,request),
           spend:metered.spend,
           onNarration:text=>store.event(id,'narration',text.slice(0,600)),
           onAction:(name,input)=>store.event(id,'action',describe(name,input)),
@@ -122,9 +190,13 @@ export function createComputer(store,{run=native,permissionCheck=permissions,age
     },
     forget(conversationKey){memory.delete(conversationKey);},
     stop(){current=null;controlledUntil=0;screens.clear();memory.clear();},
-    /// Matthew's own input from the iPhone. Background work waits while he is in control.
+    /// Matthew takes the Mac from the iPhone. Nova's running task pauses before its next action.
+    takeOver(device){takeControl(device);return {paused:Boolean(current)};},
+    /// Matthew's own input from the iPhone. It is human input, so it is not limited to the AI's range,
+    /// but it still needs the owner iPhone, no emergency stop and a range other than Just chat.
     async input(device,request){
       authorize(device);
+      if(readAccess(store).level==='chat')fail(CHAT_ONLY);
       const action=String(request?.action??'');
       if(!INPUT_ACTIONS.has(action))fail('Unsupported input');
       const clean={action,direct:true};
@@ -138,17 +210,23 @@ export function createComputer(store,{run=native,permissionCheck=permissions,age
       }
       if(action==='type'){if(typeof request.text!=='string'||!request.text||request.text.length>1000)fail('Type 1–1000 characters');clean.text=request.text;}
       if(action==='key'){if(typeof request.text!=='string'||!/^[A-Za-z0-9_+\-=\[\];',./`\\ ]{1,40}$/.test(request.text))fail('Invalid key');clean.text=request.text;}
-      controlledUntil=Date.now()+CONTROL_MS;
+      takeControl(device);
       await run({action:'begin'});
-      return await run(clean);
+      return await run({...clean,scope:{mode:'full'}});
     },
-    release(device){authorize(device);controlledUntil=0;},
-    // A fresh screenshot for the iPhone's live view. Never goes to Claude.
+    /// Hand back: a paused task continues from a fresh screenshot.
+    release(device){
+      authorize(device);
+      if(controlled()&&current)store.event(current.id,'resumed','Matthew handed back control');
+      controlledUntil=0;
+    },
+    // A fresh screenshot for the iPhone's live view. Never goes to an AI provider.
     async live(device){
       authorize(device);
+      if(readAccess(store).level==='chat')fail(CHAT_ONLY);
       if(liveBusy)fail('A live screenshot is already being captured');
       liveBusy=true;
-      try{const shot=await run({action:'screenshot'});return Buffer.from(shot.image,'base64');}
+      try{const shot=await run({action:'screenshot',scope:{mode:'full'}});return Buffer.from(shot.image,'base64');}
       finally{liveBusy=false;}
     },
     screen(device,id){authorize(device);const screen=screens.get(device);if(screen?.id!==id)fail('Screen not found');return Buffer.from(screen.jpeg,'base64');}

@@ -15,7 +15,9 @@ The iPhone stays on Nova's face unless Nova uses the Mac or draws something. Whe
 
 ## Taking over
 
-On the face, swipe up to see the Mac, then tap **Take over**. The iPhone turns sideways and you drive: tap to click, double-tap to double-click, press and hold to right-click, pinch to zoom, drag the side pad to scroll, and type or press keys at the side. Whatever Nova was doing stops. Tap **Hand back** when you're done; scheduled Mac work waits until then (or two minutes after your last tap).
+On the face, swipe up to see the Mac, then tap **Take over** (or press and hold the face → Take control). The iPhone turns sideways and you drive: tap to click, double-tap to double-click, press and hold to right-click, pinch to zoom, drag the side pad to scroll, and type or press keys at the side. Whatever Nova was doing **pauses**. Tap **Hand back** when you're done so it can continue from a new screenshot; scheduled Mac work waits until then. If you never hand back, the paused task ends after five minutes.
+
+Remote control is off while Nova's range is Just chat. In Chosen apps, Nova can only see and click the apps you picked.
 
 ## Work: background agents, schedules and monitors
 
@@ -38,7 +40,7 @@ Work survives Core restarts (schedules are in SQLite); running agents are marked
 
 ## Limits that still apply
 
-- **Owner only:** only the iPhone designated with `npm run computer:owner` can run computer tasks. Other paired devices get text chat.
+- **Owner only:** only the iPhone paired from the Mac with "This iPhone controls the Mac" (or `node core/cli.mjs pair --owner`) can run computer tasks. Other paired devices get text chat. Just chat turns computer tasks and remote control off for everyone.
 - **One task on the Mac at a time,** at most 40 Claude rounds per task. Up to four background agents in parallel.
 - **Spending:** no limit, by Matthew's choice (ADR 0010). Every Claude round is metered to the usage Anthropic reports, and the panel shows the running total. When the Claude credits run out, Nova says so. Schedules spend while nobody is watching; research with web search costs more than a plain question (a test with two agents and one scheduled check cost $0.51).
 - **Signed input:** every native request carries an HMAC-bound payload with a fresh nonce and five-second expiry, checked by Nova Operator before it acts. Only Core holds the key.

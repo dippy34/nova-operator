@@ -8,5 +8,5 @@ try{
     store.db.prepare("INSERT INTO settings(key,value) VALUES('computer_owner',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(id);
   }
   store.event(null,'computer_owner','Computer owner configuration changed locally');
-  console.log('Computer owner configuration saved. Sessions still require explicit iPhone consent.');
+  console.log(id==='disable' ? 'Computer control is disabled.' : 'This paired iPhone now controls the Mac within Nova’s configured access range.');
 }finally{store.close();}

@@ -6,8 +6,11 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Store } from './db.mjs';
 import { createAI } from './ai.mjs';
-import { createComputer, permissions } from './computer.mjs';
+import { createComputer, permissions, requestPermissions } from './computer.mjs';
 import { createWork } from './work.mjs';
+import { readAccess, validateApps, validateFolders, LEVELS } from './policy.mjs';
+import { keys as defaultKeys, PROVIDERS, providerStatus, selectedProvider, testKey } from './keys.mjs';
+import { computerName, createPairingGuard, installedApps, listFolders, setupStatus } from './setup.mjs';
 
 const execFileAsync = promisify(execFile);
 const defaultDb = resolve(process.env.NOVA_DB ?? './.nova-data/nova.sqlite');
@@ -16,6 +19,7 @@ const types = new Set(['hello', 'mac.status', 'repo.status', 'ai.chat', 'compute
 const json = (res, status, object) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
   res.end(JSON.stringify(object));
+  return true;
 };
 async function readJson(req) {
   let size = 0, chunks = [];
@@ -32,11 +36,16 @@ function cleanMessage(message) {
   return message.trim();
 }
 
-export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORKSPACE, executeOverride, aiOptions, computerOptions, workOptions } = {}) {
+export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORKSPACE, executeOverride, aiOptions, computerOptions, workOptions, setupOptions = {} } = {}) {
   const store = new Store(dbFile);
-  const ai = createAI(store, aiOptions);
-  const computer=createComputer(store,computerOptions);
-  const work=createWork(store,computer,{call:computerOptions?.call,...workOptions});
+  const keyStore = setupOptions.keyStore ?? defaultKeys;
+  const keyTest = setupOptions.testKey ?? testKey;
+  const askPermissions = setupOptions.requestPermissions ?? requestPermissions;
+  const apps = setupOptions.installedApps ?? installedApps;
+  const ai = createAI(store, { keyStore, ...aiOptions });
+  const computer=createComputer(store,{keyStore,...computerOptions});
+  const work=createWork(store,computer,{call:computerOptions?.call,openai:computerOptions?.openai,keyStore,...workOptions});
+  const pairing = createPairingGuard(setupOptions.pairing);
   let server;
   let closing = false, closePromise;
   const active = new Map();
@@ -75,21 +84,113 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
     const task=new Promise(ok=>setImmediate(ok)).then(()=>{scheduled.delete(id);return runJob(id,type,payload,deviceId);});
     pending.add(task);void task.finally(()=>pending.delete(task));
   };
+  const badProvider = res => json(res,400,{error:'Choose Claude or OpenAI'});
+  // Setup, devices and unpairing. Returns true once it has responded, otherwise undefined.
+  // Changes are owner-only; any paired device may read setup status and unpair itself.
+  const setupRoute = async (req, url, device, owner, res) => {
+    const path = url.pathname;
+    if (req.method === 'GET' && path === '/v1/setup') return json(res,200,await setupStatus(store,device,{keyStore,permissionCheck:computer.permissions,owner}));
+    if (req.method === 'POST' && path === '/v1/unpair') { store.revokeDevice(device.id); return json(res,200,{unpaired:true}); }
+    if (!path.startsWith('/v1/setup/') && path !== '/v1/devices' && path !== '/v1/devices/revoke') return undefined;
+    if (!owner) return json(res,403,{error:'Only the iPhone that controls this Mac can change setup. Pair it from the Mac with "This iPhone controls the Mac" turned on.'});
+    if (req.method === 'GET' && path === '/v1/devices') {
+      const ownerId = store.setting('computer_owner');
+      return json(res,200,{devices:store.devices().map(d=>({...d,owner:d.id===ownerId,current:d.id===device.id}))});
+    }
+    if (req.method === 'POST' && path === '/v1/devices/revoke') {
+      const body = await readJson(req);
+      return store.revokeDevice(String(body?.id ?? '')) ? json(res,200,{revoked:true}) : json(res,404,{error:'That device is not paired'});
+    }
+    if (req.method === 'GET' && path === '/v1/setup/apps') return json(res,200,{apps:await apps()});
+    if (req.method === 'GET' && path === '/v1/setup/folders') {
+      try { return json(res,200,{folders:listFolders(url.searchParams.get('in') ?? '~')}); }
+      catch (error) { return json(res,400,{error:error.message}); }
+    }
+    if (req.method === 'POST' && path === '/v1/setup/access') {
+      const body = await readJson(req);
+      if (!LEVELS.includes(body?.level)) return json(res,400,{error:'Choose a range: chat, apps or full'});
+      try {
+        let chosenApps = [];
+        if (body.level === 'apps') {
+          const installed = new Map((await apps()).map(a=>[a.bundleId,a]));
+          chosenApps = validateApps(body.apps ?? []).map(a=>installed.get(a.bundleId) ?? null);
+          if (chosenApps.includes(null)) return json(res,400,{error:"One of those apps isn't installed on the Mac"});
+        }
+        const folders = body.level === 'chat' ? [] : validateFolders(body.folders ?? []);
+        if (body.level === 'apps' && !chosenApps.length && !folders.length) return json(res,400,{error:'Choose at least one app or folder'});
+        store.setSetting('access_level',body.level);
+        store.setSetting('access_apps',JSON.stringify(chosenApps));
+        store.setSetting('access_folders',JSON.stringify(folders));
+        store.setSetting('access_chosen','1');
+        store.event(null,'range',`${device.name} set Nova's range to ${body.level} (${chosenApps.length} apps, ${folders.length} folders)`);
+        return json(res,200,{access:readAccess(store)});
+      } catch (error) { return json(res,400,{error:error.message}); }
+    }
+    if (req.method === 'POST' && path === '/v1/setup/key') {
+      const body = await readJson(req);
+      const provider = body?.provider;
+      if (!PROVIDERS[provider]) return badProvider(res);
+      const key = typeof body.key === 'string' ? body.key.trim() : '';
+      if (!PROVIDERS[provider].pattern.test(key)) return json(res,400,{error:provider==='anthropic'?"That doesn't look like a Claude API key. Claude keys start with sk-ant-.":"That doesn't look like an OpenAI API key. OpenAI keys start with sk-."});
+      const test = await keyTest(provider,key);
+      if (test.code === 'rejected') return json(res,400,{error:test.message,test});
+      try { keyStore.save(provider,key); } catch (error) { return json(res,500,{error:error.message}); }
+      if (body.select !== false) store.setSetting('ai_provider',provider);
+      store.event(null,'ai_key',`${device.name} connected a ${PROVIDERS[provider].label} key`);
+      return json(res,200,{saved:true,test,ai:providerStatus(store,keyStore)});
+    }
+    if (req.method === 'POST' && path === '/v1/setup/key/remove') {
+      const body = await readJson(req);
+      if (!PROVIDERS[body?.provider]) return badProvider(res);
+      keyStore.remove(body.provider);
+      if (store.setting('ai_provider') === body.provider) store.setSetting('ai_provider',null);
+      store.event(null,'ai_key',`${device.name} removed the ${PROVIDERS[body.provider].label} key from the Keychain`);
+      return json(res,200,{ai:providerStatus(store,keyStore)});
+    }
+    if (req.method === 'POST' && path === '/v1/setup/provider') {
+      const body = await readJson(req);
+      if (!PROVIDERS[body?.provider]) return badProvider(res);
+      if (!keyStore.storage(body.provider)) return json(res,400,{error:`Connect your ${PROVIDERS[body.provider].label} key first`});
+      store.setSetting('ai_provider',body.provider);
+      return json(res,200,{ai:providerStatus(store,keyStore)});
+    }
+    if (req.method === 'POST' && path === '/v1/setup/test') {
+      const body = await readJson(req);
+      if (!PROVIDERS[body?.provider]) return badProvider(res);
+      const key = keyStore.read(body.provider);
+      if (!key) return json(res,400,{error:`No ${PROVIDERS[body.provider].label} key is connected yet`});
+      return json(res,200,{test:await keyTest(body.provider,key)});
+    }
+    if (req.method === 'POST' && path === '/v1/setup/permissions') {
+      try { await askPermissions(); } catch (error) { return json(res,409,{error:error.message}); }
+      return json(res,200,{asked:true,permissions:await computer.permissions()});
+    }
+    return json(res,404,{error:'Not found'});
+  };
   const handler = async (req, res) => {
     try {
       if (closing) return json(res,503,{error:'Core is shutting down'});
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
       if (req.method === 'GET' && url.pathname === '/v1/health') return json(res, 200, { service:'nova-core', version:'0.1.0', ready:true });
       if (req.method === 'POST' && url.pathname === '/v1/pair') {
+        if (pairing.locked()) return json(res,429,{error:'Too many wrong codes. Wait 10 minutes, then make a new code on your Mac.',code:'locked'});
         const body = await readJson(req);
         if (!body || typeof body.code !== 'string' || body.code.length > 60 || typeof body.deviceName !== 'string' || body.deviceName.length > 50 || !body.deviceName.trim()) return json(res,400,{error:'Invalid pairing request'});
         const credential = store.redeemInvitation(body.code, body.deviceName.trim());
-        return credential ? json(res, 201, credential) : json(res, 403, {error:'Pairing code invalid, expired or used'});
+        if (credential) return json(res, 201, {...credential, computer:computerName()});
+        if (pairing.fail()) store.expireInvitations();
+        return json(res, 403, {error:"That code didn't work. It may be mistyped, expired (codes last 10 minutes) or already used. Make a new code on your Mac and try again.",code:'invalid'});
       }
       const authorization = req.headers.authorization ?? '';
       const device = authorization.startsWith('Bearer ') ? store.auth(authorization.slice(7)) : null;
-      if (!device) return json(res, 401, { error:'Pair this iPhone before accessing Nova' });
-      if (req.method === 'GET' && url.pathname === '/v1/status') return json(res,200,{connected:true,stopped:store.stopped(),device:device.name,capabilities:[...types],ai:ai.status(),computer:computer.status(device.id)});
+      if (!device) return json(res, 401, { error:'This iPhone is no longer paired with the Mac. Pair it again.', code:'unpaired' });
+      const owner = computer.status(device.id).owner;
+      if (req.method === 'GET' && url.pathname === '/v1/status') {
+        const provider = selectedProvider(store, keyStore);
+        return json(res,200,{connected:true,stopped:store.stopped(),device:device.name,capabilities:[...types].filter(type=>type!=='computer.task'||owner),ai:ai.status(),computer:computer.status(device.id),
+          range:readAccess(store).level,provider:{selected:provider,label:PROVIDERS[provider].label,configured:Boolean(keyStore.storage(provider))}});
+      }
+      if (await setupRoute(req, url, device, owner, res)) return;
       if(req.method==='GET'&&url.pathname==='/v1/computer/permissions'){
         if(!computer.status(device.id).owner)return json(res,403,{error:'Owner iPhone required'});
         return json(res,200,await computer.permissions());
@@ -99,19 +200,26 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
         if(task)active.get(task)?.abort();
         return json(res,200,{ended:true});
       }
+      if(req.method==='POST'&&url.pathname==='/v1/computer/takeover'){
+        try{return json(res,200,computer.takeOver(device.id));}catch(error){return json(res,403,{error:error.message});}
+      }
       if(req.method==='POST'&&url.pathname==='/v1/computer/input'){
         const body=await readJson(req);
-        try{
-          if(!computer.status(device.id).owner)throw new Error('Owner iPhone required');
-          // Taking over ends whatever Nova is doing on the Mac.
-          if(computer.busy()){await work.yieldComputer();const busy=computer.busy();if(busy){store.event(busy.id,'takeover','Matthew took over the Mac');active.get(busy.id)?.abort();}}
-          return json(res,200,await computer.input(device.id,body));
-        }catch(error){return json(res,409,{error:error.message});}
+        // Taking over pauses whatever Nova is doing on the Mac until Matthew hands back control.
+        try{return json(res,200,await computer.input(device.id,body));}catch(error){return json(res,409,{error:error.message});}
       }
       if(req.method==='POST'&&url.pathname==='/v1/computer/release'){
         try{computer.release(device.id);return json(res,200,{released:true});}catch(error){return json(res,403,{error:error.message});}
       }
       if(req.method==='GET'&&url.pathname==='/v1/work')return json(res,200,work.status(device.id));
+      if(req.method==='POST'&&url.pathname==='/v1/work/agent'){
+        try{return json(res,201,{id:work.startAgent(device.id,await readJson(req))});}
+        catch(error){return json(res,400,{error:error.message});}
+      }
+      if(req.method==='POST'&&url.pathname==='/v1/work/schedule'){
+        try{return json(res,201,work.addSchedule(device.id,await readJson(req)));}
+        catch(error){return json(res,400,{error:error.message});}
+      }
       if(req.method==='POST'&&url.pathname==='/v1/work/cancel'){
         const body=await readJson(req);
         try{return json(res,200,{message:work.cancel(device.id,String(body?.id??''))});}catch(error){return json(res,404,{error:error.message});}
@@ -130,6 +238,7 @@ export function makeNova({ dbFile = defaultDb, workspace = process.env.NOVA_WORK
         if (store.stopped()) return json(res,423,{error:'Nova is stopped. Resume locally on Mac.'});
         const body = await readJson(req);
         if (!body || !types.has(body.type)) return json(res,400,{error:'Only known safe task types are supported'});
+        if (body.type === 'computer.task' && !owner) return json(res,403,{error:'This iPhone is paired for conversation only. Enable "This iPhone controls the Mac" when pairing from Nova on your Mac.'});
         if (['ai.chat','computer.task'].includes(body.type) && (typeof body.message !== 'string' || !body.message.trim() || body.message.length > 2000)) return json(res,400,{error:'AI messages must contain 1–2000 characters'});
         const payload = { message: ['ai.chat','computer.task'].includes(body.type) ? body.message.trim() : body.type === 'hello' ? cleanMessage(body.message ?? '') : '' };
         if (body.type === 'computer.task' && typeof body.conversation === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(body.conversation)) payload.conversation = body.conversation;

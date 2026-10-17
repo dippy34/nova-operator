@@ -1,24 +1,8 @@
 // Text-only API worker. No tools, shell dispatch, or pairing credentials.
 // A separate process is organization, NOT an OS security boundary (same macOS user).
-import { readFileSync, statSync } from 'node:fs';
-import { parseEnv } from 'node:util';
-import { fileURLToPath } from 'node:url';
-
 export const MODEL = 'claude-haiku-5-5';
 export const MAX_OUTPUT = 512;
 export const SYSTEM = 'You are Nova, Matthew’s AI companion. Be warm, direct and concise. This version is conversation only. You cannot operate the Mac, browse, run code, inspect files or supervise other agents. Never claim you performed an action. The app has separate Mac status and Repo status buttons. Do not invent their results. You remember only a few recent messages. Reply in at most 200 words.';
-const keyFile = fileURLToPath(new URL('../.env.local', import.meta.url));
-
-export function configuredKey() {
-  // Keep LaunchAgent plists and IPC free of secrets. Read the private local file here.
-  let key;
-  try {
-    if (statSync(keyFile).mode & 0o077) return '';
-    key = parseEnv(readFileSync(keyFile, 'utf8')).ANTHROPIC_API_KEY;
-  } catch { return ''; }
-  return typeof key === 'string' && key.startsWith('sk-ant-') && key.length > 30 ? key : '';
-}
-
 export async function askClaude(messages, { key, signal, fetchImpl = fetch } = {}) {
   if (!key) throw new Error('KEY');
   if (!Array.isArray(messages) || JSON.stringify(messages).length > 12000 || messages.length > 7 ||
