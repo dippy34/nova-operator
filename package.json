@@ -14,6 +14,8 @@
     "service:status": "node core/service.mjs status",
     "service:remove": "node core/service.mjs remove",
     "operator:build": "node macos/build.mjs",
+    "operator:package": "node macos/package.mjs",
+    "package:check": "node macos/package-check.mjs",
     "operator:install": "node macos/install.mjs install",
     "operator:status": "node macos/install.mjs status",
     "operator:remove": "node macos/install.mjs remove",

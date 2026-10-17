@@ -13,3 +13,6 @@ ios/Signing.local.xcconfig
 CLAUDE.local.md
 
 .claude/settings.local.json
+
+# Packaged app output (npm run operator:package)
+dist/

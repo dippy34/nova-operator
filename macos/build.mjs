@@ -6,9 +6,12 @@ import {paths as defaultPaths} from '../core/paths.mjs';
 const xml=value=>value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
 
 /// The signed configuration is how the native executor finds its key, nonces, Core and runtime.
-/// It comes from the same shared paths as Core, the CLI and the login service.
+/// It comes from the same shared paths as Core, the CLI and the login service. A packaged app
+/// carries no absolute paths: it derives them from its own bundle (Locations in Operator.swift).
 export function infoPlist(paths=defaultPaths){
-  return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.nova.operator.macos</string><key>CFBundleExecutable</key><string>NovaOperator</string><key>CFBundleName</key><string>Nova Operator</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>CFBundleShortVersionString</key><string>0.2.0</string><key>NovaCoreDataDirectory</key><string>${xml(paths.data)}</string><key>NovaCoreRoot</key><string>${xml(paths.root)}</string><key>NovaNodePath</key><string>${xml(paths.runtime)}</string><key>LSUIElement</key><true/><key>NSScreenCaptureUsageDescription</key><string>Nova Operator captures the screen, or only the apps you chose for Nova, so Nova can see what it is doing.</string></dict></plist>`;
+  const locations=paths.layout==='app'?'<key>NovaLayout</key><string>app</string>'
+    :`<key>NovaCoreDataDirectory</key><string>${xml(paths.data)}</string><key>NovaCoreRoot</key><string>${xml(paths.root)}</string><key>NovaNodePath</key><string>${xml(paths.runtime)}</string>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>dev.nova.operator.macos</string><key>CFBundleExecutable</key><string>NovaOperator</string><key>CFBundleName</key><string>Nova Operator</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>1</string><key>CFBundleShortVersionString</key><string>0.2.0</string>${locations}<key>LSUIElement</key><true/><key>NSScreenCaptureUsageDescription</key><string>Nova Operator captures the screen, or only the apps you chose for Nova, so Nova can see what it is doing.</string></dict></plist>`;
 }
 
 function build(paths=defaultPaths){

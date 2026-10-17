@@ -125,7 +125,8 @@ test('the login service and native executor configuration come from the same pat
 test('the native executor derives the same file names from its signed data directory',()=>{
   const swift=readFileSync(join(checkout,'macos','Operator.swift'),'utf8');
   for(const fragment of [`appendingPathComponent("${FILES.operatorKey}")`,`appendingPathComponent("${FILES.nonces}")`,
-    `appendingPathComponent("${APP_SUPPORT}",isDirectory:true).appendingPathComponent("${FILES.socket}")`,
+    `appendingPathComponent("${APP_SUPPORT}",isDirectory:true)`,`supportDirectory.appendingPathComponent("${FILES.socket}")`,
+    `appendingPathComponent("Contents/Helpers/${FILES.runtime}")`,`root:resources,data:supportDirectory.path`,
     `"NOVA_DATA_DIR":data`,`"NOVA_DB":data+"/${FILES.db}"`,`root+"/core/cli.mjs"`])
     assert(swift.includes(fragment),`Operator.swift no longer contains ${fragment}`);
 });

@@ -2,7 +2,7 @@
 
 Nova is a working personal prototype, not a beta-ready release. The first beta is Mac + native iPhone, with 5–10 invited testers after the gates below pass. Android, Windows, coding-agent supervision and a separate desk companion remain later work.
 
-**Tracker:** [Beta readiness #3](https://github.com/dippy34/nova-operator/issues/3). **Agent starting point:** [HANDOFF.md](HANDOFF.md). **Last updated:** 2026-10-16.
+**Tracker:** [Beta readiness #3](https://github.com/dippy34/nova-operator/issues/3). **Agent starting point:** [HANDOFF.md](HANDOFF.md). **Last updated:** 2026-10-17.
 
 ## Definition of ready
 
@@ -35,13 +35,13 @@ Mac diagnostics do not prove the phone is connected, that a provider key works, 
 
 ## B2 — Self-contained Mac installation
 
-Status: Not started. This is the next independent coding milestone; see [implementation issue #4](https://github.com/dippy34/nova-operator/issues/4).
+Status: In progress; see [implementation issue #4](https://github.com/dippy34/nova-operator/issues/4). Shared path resolution and a packaged-app build mode exist (2026-10-17). The packaged app does not yet run Core itself, migrate data or install, and nothing here is distributable. Evidence is in the [handoff](HANDOFF.md#latest-verification).
 
-- [ ] Bundle a pinned, verified runtime and only the Core resources needed at runtime. A customer must not need a checkout, development Node or Xcode.
+- [ ] Bundle a pinned, verified runtime and only the Core resources needed at runtime. A customer must not need a checkout, development Node or Xcode. *Partial:* `npm run operator:package` bundles pinned Node 24.19.0 arm64 (checksum + Developer ID verified), its license and an explicit, audited Core file list. Not yet tested on a Mac without developer tools; Intel unsupported.
 - [ ] Separate immutable app resources from mutable Application Support data. Migrate existing installations with a backup and preserve pairing, keys, owner, chosen range, schedules and stop state.
 - [ ] Launch and monitor Core from the installed app, with a clear recovery action. Preserve the current working developer service until the replacement passes isolated checks.
 - [ ] Centralize app/Core build versions and record compatible data/protocol versions.
-- [ ] Prove operation from a copied app in a path containing spaces, with the original checkout and development runtime unavailable.
+- [ ] Prove operation from a copied app in a path containing spaces, with the original checkout and development runtime unavailable. *Partial:* `npm run package:check` runs bundled Core and CLI from a copied app in a path with spaces under a sandbox denying the checkout, development Node and live data. The packaged native executor's permissions and full task flow are not yet exercised.
 - [ ] Test install, login restart, crash recovery, update, rollback and uninstall with saved-data retention.
 - [ ] Prepare the signing, notarization and distribution route. A local development signature is not a distributable beta installer.
 

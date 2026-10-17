@@ -369,7 +369,7 @@ func perform(_ request: [String:Any]) async throws -> [String:Any] {
 // MARK: - Authorization
 
 func authorize(_ envelope: [String:String]) throws -> [String:Any] {
-    guard let dataDirectory=Bundle.main.object(forInfoDictionaryKey:"NovaCoreDataDirectory") as? String else { try deny("Unsigned configuration") }
+    guard let dataDirectory=Locations.current?.data else { try deny("Unsigned configuration") }
     // Trusted configuration is part of the signed bundle. The caller/model
     // cannot select a different key and mint its own authorization.
     let keyURL=URL(fileURLWithPath:dataDirectory).appendingPathComponent("operator.key")
@@ -419,8 +419,28 @@ func respond(_ raw: Data) async -> [String:Any] {
 // Core talks to this long-running app over a Unix socket in a 0700 directory, so
 // macOS attributes Accessibility and Screen Recording to Nova Operator itself.
 // sun_path is limited to 104 bytes, which rules out the project's .nova-data path.
-let socketURL=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0]
-    .appendingPathComponent("Nova Operator",isDirectory:true).appendingPathComponent("operator.sock")
+let supportDirectory=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0]
+    .appendingPathComponent("Nova Operator",isDirectory:true)
+let socketURL=supportDirectory.appendingPathComponent("operator.sock")
+
+/// Where Core, its runtime and Nova's saved data live; mirrors core/paths.mjs.
+/// A development build signs explicit checkout paths into Info.plist. A packaged app
+/// (NovaLayout=app) derives them from its own signed bundle and Application Support,
+/// so it keeps working after the app is moved and needs no checkout or system Node.
+struct Locations {
+    let layout:String, node:String, root:String, data:String
+    static let current:Locations? = {
+        let bundle=Bundle.main
+        if bundle.object(forInfoDictionaryKey:"NovaLayout") as? String == "app" {
+            guard let resources=bundle.resourcePath else { return nil }
+            return Locations(layout:"app",node:bundle.bundleURL.appendingPathComponent("Contents/Helpers/node").path,root:resources,data:supportDirectory.path)
+        }
+        guard let node=bundle.object(forInfoDictionaryKey:"NovaNodePath") as? String,
+              let root=bundle.object(forInfoDictionaryKey:"NovaCoreRoot") as? String,
+              let data=bundle.object(forInfoDictionaryKey:"NovaCoreDataDirectory") as? String else { return nil }
+        return Locations(layout:"development",node:node,root:root,data:data)
+    }()
+}
 
 func withAddress<T>(_ path: String, _ body: (UnsafePointer<sockaddr>, socklen_t) -> T) -> T {
     var address=sockaddr_un(); address.sun_family=sa_family_t(AF_UNIX)
@@ -485,14 +505,12 @@ func serve(_ client: Int32) {
 
 // MARK: - Setup window
 
-/// Runs Nova Core's local setup commands. Paths come from the signed Info.plist, and a key is
+/// Runs Nova Core's local setup commands. Paths come from the signed bundle (Locations), and a key is
 /// passed on stdin so it never appears in a process list.
 enum CoreCLI {
     static func run(_ arguments: [String], input: String? = nil) async -> [String:Any] {
-        guard let node=Bundle.main.object(forInfoDictionaryKey:"NovaNodePath") as? String,
-              let root=Bundle.main.object(forInfoDictionaryKey:"NovaCoreRoot") as? String,
-              let data=Bundle.main.object(forInfoDictionaryKey:"NovaCoreDataDirectory") as? String
-        else { return ["error":"Rebuild Nova Operator with npm run operator:build."] }
+        guard let locations=Locations.current else { return ["error":"Rebuild Nova Operator with npm run operator:build."] }
+        let (node,root,data)=(locations.node,locations.root,locations.data)
         return await withCheckedContinuation { done in
             DispatchQueue.global().async {
                 let process=Process(), output=Pipe(), stdin=Pipe()
@@ -993,6 +1011,11 @@ final class StatusMenu: NSObject, NSApplicationDelegate, NSMenuDelegate {
 @main
 struct NovaOperator {
     @MainActor static func main() {
+        // Prints the resolved locations (no keys or saved data) so tests can check they match Core's.
+        if CommandLine.arguments.dropFirst().first == "paths" {
+            guard let l=Locations.current else { FileHandle.standardError.write(Data("Unsigned configuration\n".utf8)); exit(1) }
+            FileHandle.standardOutput.write(encode(["layout":l.layout,"node":l.node,"root":l.root,"data":l.data,"socket":socketURL.path])); exit(0)
+        }
         if CommandLine.arguments.dropFirst().first == "self-test" {
             var rejected=0
             for bad in ["cmd+bogus","hyper+a",""] { if (try? combo(bad)) == nil { rejected+=1 } }

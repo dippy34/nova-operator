@@ -2,7 +2,7 @@
 
 Start here when continuing Nova with another AI agent. This file and the source on GitHub are the durable context; do not require access to the original chat.
 
-Last updated: 2026-10-16 by Codex for Matthew’s transfer to Claude Code. Read [AGENTS.md](../AGENTS.md), [PRODUCT-CONTEXT.md](PRODUCT-CONTEXT.md), [BETA-PLAN.md](BETA-PLAN.md) and [tracker #3](https://github.com/dippy34/nova-operator/issues/3) before editing. [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md) has the ready-to-paste continuation task.
+Last updated: 2026-10-17 by Claude Code (B2 path resolver and packaging build mode). Read [AGENTS.md](../AGENTS.md), [PRODUCT-CONTEXT.md](PRODUCT-CONTEXT.md), [BETA-PLAN.md](BETA-PLAN.md) and [tracker #3](https://github.com/dippy34/nova-operator/issues/3) before editing. [CLAUDE-CODE-START.md](CLAUDE-CODE-START.md) has the ready-to-paste continuation task.
 
 ## Local project location
 
@@ -25,7 +25,9 @@ Do not ask for routine implementation permission. Matthew must perform physical 
 - The latest iPhone listening fix is installed. Its last attempted automatic launch was blocked by the phone being locked. **Real speech smoothness, repeated cycles and glow cleanup still need a phone check.** Automated state tests do not measure frame rate or microphone behavior.
 - The code supports Claude and OpenAI routes. Recent tests use mocks/local HTTP and make no paid model calls. Live OpenAI support has not been established by these checks.
 - There is currently **no overall API spending cap**, by Matthew’s earlier choice. Optional beta budget controls are planned; do not silently enable a cap for his setup.
-- The Mac app still embeds absolute checkout/runtime/data paths. It is not a self-contained beta download, and the local Apple Development signature is not a customer distribution solution.
+- B2 has started. `core/paths.mjs` is the one source of code/runtime/data locations for Core, CLI, login service, native build and owner tool; development paths are unchanged (`b6a86f2`). `npm run operator:package -- --out <dir>` builds a separate packaged app with an explicit Core file list, the pinned Node 24.19.0 arm64 runtime (checksum and Node.js Foundation Developer ID signature verified) and its license, audited against an exact file list. The packaged native executor derives its paths from its own bundle (`NovaLayout=app`). `npm run package:check` proves a copied app in a path with spaces runs Core/CLI with this checkout, development Node and live Nova data blocked by a sandbox.
+- The **installed** Mac app is still the development build with absolute checkout/runtime/data paths; it was not rebuilt or replaced. The packaged app does not yet launch/monitor Core, migrate data or install a login item, and it is not signed for distribution or notarized. The local Apple Development signature is not a customer distribution solution.
+- Known B2 collision: development and packaged builds both use `~/Library/Application Support/Nova Operator/operator.sock`, the native bundle ID `dev.nova.operator.macos` and the Core LaunchAgent label `dev.nova.operator.core`. Packaged data also defaults to that Application Support folder. Never run both installs at once; the migration step must stop and replace the development services deliberately, with rollback.
 - B1 now adds a Mac connection check and a support report. The check reads existing setup without creating/migrating it, makes unauthenticated health/auth GETs on loopback and the private HTTPS origin, checks Tailscale and native permission status, and never changes settings or executes desktop actions. It does not validate a provider key or phone connectivity.
 
 ## Latest billing question
@@ -43,9 +45,11 @@ During the transfer Matthew asked whether Claude Code could use API billing inst
 | `core/work.mjs` | Background research, schedules, monitors, reports and optional iMessage delivery; do not test actual messaging without explicit authorization |
 | `core/setup.mjs`, `tailscale.mjs`, `keys.mjs` | Pairing/setup status, private networking and provider keys |
 | `core/diagnostics.mjs`, `diagnostics.test.mjs` | Read-only connection checks and privacy-filtered support report |
+| `core/paths.mjs`, `paths.test.mjs` | Shared code/runtime/data locations; development vs packaged layout; `NOVA_DATA_DIR` isolation |
 | `core/cli.mjs`, `service.mjs` | Local setup commands and development Core login service |
 | `macos/Operator.swift` | Signed native executor, TCC permissions, menu/setup UI and support report buttons |
 | `macos/build.mjs`, `install.mjs` | Development app build and per-user native login item |
+| `macos/package.mjs`, `runtime.json`, `package.test.mjs`, `package-check.mjs` | Packaged-app build mode, pinned runtime, file audit and the copied-app sandbox acceptance check |
 | `ios/NovaApp/NovaModel.swift` | Networking, fresh-role routing, voice coordination, listener/speaker lifecycle |
 | `ios/NovaApp/VoiceCaptureState.swift`, `ios/VoiceTests/` | Generation-based recording state and meter mailbox; standalone regression tests |
 | `ios/NovaApp/ContentView.swift`, `Theme.swift`, `Home.swift`, `Onboarding.swift` | Smiley face, lightweight listening-only glow, native navigation, setup and controls |
@@ -64,6 +68,8 @@ xcodebuild -project ios/Nova.xcodeproj -scheme Nova \
   -destination 'generic/platform=iOS' -derivedDataPath /tmp/nova-ios-build \
   CODE_SIGNING_ALLOWED=NO build
 ```
+
+For B2 packaging, `npm run package:check` (about a minute; first run downloads the pinned Node archive to `~/Library/Caches/dev.nova.build/`) builds an ad-hoc-signed app in a temporary folder and runs the copied-app checks. It never touches services, the installed app or saved data. Ad-hoc signing there is only for the check.
 
 For the signed Mac build, supply the existing local `NOVA_MAC_SIGN_IDENTITY` without committing it, run `npm run operator:build`, then run the built executable with `self-test`. Native protocol tests run only when this checkout has its built app and existing key and the helper is available; report any skipped tests. A fresh checkout must never create a key for another running installation. Do not grant permissions automatically or use an ad-hoc replacement identity that loses the working grants.
 
@@ -85,17 +91,22 @@ These checks ran locally on 2026-10-16. Automated providers were mocked; no paid
 | Isolated source checkout without private app/data/key files | 77 tests passed, 1 native integration test explicitly skipped. The initial clean-clone run failed because the old test created a missing local key; its prerequisite guard is fixed. The real installed checkout still passes all 78 tests, including native rejection checks |
 | Projects relocation | Both LaunchAgents and both app configurations point to Projects; same signed Mac identity, native self-test and all 12 diagnostics pass; SQLite integrity and owner/range state preserved |
 | Revalidation from the relocated checkout | All 78 backend tests and 11 voice tests passed; iOS unsigned build succeeded from the new path. No phone reinstall or live paid AI task was performed |
+| B2 shared paths (2026-10-17, `b6a86f2`) | 87 backend tests passed, 0 skipped, including 9 path tests (Core and CLI from another folder against isolated data in a path with spaces). Live Core service restarted on the new code: 12/12 Mac checks. Installed native app not rebuilt |
+| B2 packaging build mode (2026-10-17) | 92 backend tests passed, 0 skipped, 11 voice tests passed. `npm run package:check`: 9/9 — pinned runtime checksum/signature, exact file audit, no checkout path in configuration, sandbox negative controls, app-layout resolution in Core and native executor, development-bundle resolution unchanged, owner-only isolated data, Core start/401/clean stop. 12/12 live Mac checks afterwards |
 | Real phone speech/Stop/takeover acceptance | Outstanding |
 
 ## Next bounded task
 
-Implementation issue: [B2 #4](https://github.com/dippy34/nova-operator/issues/4), with a first bounded refactor and acceptance checks.
+Implementation issue: [B2 #4](https://github.com/dippy34/nova-operator/issues/4). Done so far: shared paths and a packaged-app build mode with a copied-app acceptance check (see Latest verification).
 
-Start **B2: a self-contained Mac application** in an isolated output directory. First extract runtime/data path configuration so Core, the native helper, CLI and login service agree. Preserve the existing development defaults and the live install. Bundle only explicit runtime resources plus a pinned verified Node binary and its license. Never copy `.env.local`, `.nova-data`, signing files, private databases or Keychain contents into an app or archive.
+Next: **launch and monitor the bundled Core from the packaged app, and migrate data with rollback — against temporary data only.**
 
-The acceptance test must copy the app elsewhere and remove access to the source checkout/developer runtime. Test data migration, service startup/recovery and rollback against temporary data before touching Matthew’s real setup. A build that only works on his existing paths does not close B2.
+1. Decide how the packaged app runs Core: the native app supervising the bundled runtime, or a packaged login item. Either way resolve the socket, bundle ID and LaunchAgent label collision listed under Actual state, and record it in a decision record.
+2. Add a migration command that copies development `.nova-data` (database file set, operator key, nonces) to Application Support with a backup and integrity check, and a rollback that restores the development install. Test it only with temporary `HOME`/data. Never move Matthew’s live data until the replacement passes and he is told.
+3. Add a database schema version and centralize app/Core versions (currently package 0.1.0, health 0.1.0, native app 0.2.0).
+4. Extend `package:check` to login restart, crash recovery, update over an older package, rollback and uninstall with retained data.
 
-Physical-device checks can remain outstanding while this independent work proceeds. For a fresh agent on a different computer, no device access or current credentials should be assumed.
+Still open beyond that: Intel/universal runtime (arm64 only today), GPG verification of Node’s checksum list (verify — only the pinned SHA-256 and Developer ID signature are checked), hardened runtime/notarization/distribution, and real TCC behavior of a packaged executor. Physical-device checks can remain outstanding while this independent work proceeds. For a fresh agent on a different computer, no device access or current credentials should be assumed.
 
 ## Handoff protocol
 
